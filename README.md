@@ -56,20 +56,18 @@ Profiles are cumulative: `standard` includes everything in `minimal`, and `kitch
 
 Each section maps to a yoinkc inspector:
 
-| Section | What driftify creates | yoinkc inspector exercised |
-|---------|----------------------|---------------------------|
-| 📦 **rpm** | EPEL repo, base + EPEL packages, ghost package (install-then-remove) | RPM / Packages |
-| ⚙️ **services** | Enable httpd/nginx, disable kdump, mask bluetooth | Services |
-| 🔧 **config** | Modified RPM-owned configs, unowned app configs, orphaned configs | Configuration Files |
-| 🌐 **network** | Firewalld rules, custom zones, /etc/hosts entries, NM profiles, proxy | Network |
-| 💾 **storage** | NFS/CIFS fstab entries, app data dirs under /var | Storage |
-| ⏰ **scheduled** | Cron jobs, systemd timers, at jobs, per-user crontabs | Scheduled Tasks |
-| 🐳 **containers** | Quadlet .container/.network units, docker-compose.yml | Containers |
-| 🧩 **nonrpm** | pip venvs, npm projects, Go binaries, mystery binaries, git repos | Non-RPM Software |
-| 🐧 **kernel** | Sysctl overrides, modules-load.d, dracut config, GRUB args | Kernel / Boot |
-| 🛡️ **selinux** | SELinux booleans, audit rules, custom policy modules | SELinux / Security |
-| 👥 **users** | App users/groups, sudoers rules, SSH keys, subuid/subgid | Users / Groups |
-| 🔑 **secrets** | Fake AWS keys, PEM keys, DB connection strings, API tokens | Secrets (redaction) |
+- 📦 **rpm** — EPEL repo, base + EPEL packages, ghost package (install-then-remove)
+- ⚙️ **services** — Enable httpd/nginx, disable kdump, mask bluetooth
+- 🔧 **config** — Modified RPM-owned configs, unowned app configs, orphaned configs
+- 🌐 **network** — Firewalld rules, custom zones, /etc/hosts entries, NM profiles, proxy
+- 💾 **storage** — NFS/CIFS fstab entries, app data dirs under /var
+- ⏰ **scheduled** — Cron jobs, systemd timers, at jobs, per-user crontabs
+- 🐳 **containers** — Quadlet .container/.network units, docker-compose.yml
+- 🧩 **nonrpm** — pip venvs, npm projects, Go binaries, mystery binaries, git repos
+- 🐧 **kernel** — Sysctl overrides, modules-load.d, dracut config, GRUB args
+- 🛡️ **selinux** — SELinux booleans, audit rules, custom policy modules
+- 👥 **users** — App users/groups, sudoers rules, SSH keys, subuid/subgid
+- 🔑 **secrets** — Fake AWS keys, PEM keys, DB connection strings, API tokens
 
 ## Features
 
