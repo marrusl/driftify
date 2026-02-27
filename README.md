@@ -62,7 +62,7 @@ Each section maps to a yoinkc inspector:
 - 🌐 **network** — Firewalld rules, custom zones, /etc/hosts entries, NM profiles, proxy
 - 💾 **storage** — NFS/CIFS fstab entries, app data dirs under /var
 - ⏰ **scheduled** — Cron jobs, systemd timers, at jobs, per-user crontabs
-- 🐳 **containers** — Quadlet .container/.network units, docker-compose.yml
+- 🦭 **containers** — Quadlet .container/.network units, docker-compose.yml
 - 🧩 **nonrpm** — pip venvs, npm projects, Go binaries, mystery binaries, git repos
 - 🐧 **kernel** — Sysctl overrides, modules-load.d, dracut config, GRUB args
 - 🛡️ **selinux** — SELinux booleans, audit rules, custom policy modules
@@ -91,7 +91,7 @@ Sections are being implemented iteratively:
 - [ ] 🌐 Network
 - [ ] 💾 Storage
 - [ ] ⏰ Scheduled Tasks
-- [ ] 🐳 Containers
+- [ ] 🦭 Containers
 - [ ] 🧩 Non-RPM Software
 - [ ] 🐧 Kernel / Boot
 - [ ] 🛡️ SELinux / Security
