@@ -9,8 +9,6 @@ from pathlib import Path
 
 import driftify
 
-_DEVNULL = open(os.devnull, "w")
-
 
 class DriftifyTestCase(unittest.TestCase):
     """Base class that patches detect_os and suppresses log output."""
@@ -19,11 +17,13 @@ class DriftifyTestCase(unittest.TestCase):
         self.original_stamp_path = driftify.STAMP_PATH
         self.original_detect_os = driftify.detect_os
         driftify.detect_os = lambda: ("centos", 9)
-        self._suppress = redirect_stdout(_DEVNULL)
+        self._devnull = io.StringIO()
+        self._suppress = redirect_stdout(self._devnull)
         self._suppress.__enter__()
 
     def tearDown(self):
         self._suppress.__exit__(None, None, None)
+        self._devnull.close()
         driftify.STAMP_PATH = self.original_stamp_path
         driftify.detect_os = self.original_detect_os
 
