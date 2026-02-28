@@ -361,6 +361,65 @@ class TestConfirmation(DriftifyTestCase):
         args = p.parse_args([])
         self.assertFalse(args.yes)
 
+    def test_quiet_flag_parsed(self):
+        p = driftify.build_parser()
+        args = p.parse_args(["-q"])
+        self.assertTrue(args.quiet)
+        args = p.parse_args(["--quiet"])
+        self.assertTrue(args.quiet)
+        args = p.parse_args([])
+        self.assertFalse(args.quiet)
+
+    def test_quiet_suppresses_running_lines(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
+                              quiet=True)
+        import unittest.mock as _mock
+        mock_result = _mock.MagicMock()
+        mock_result.returncode = 0
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with _mock.patch("subprocess.run", return_value=mock_result):
+                d.run_cmd(["echo", "hello"])
+        self._suppress.__enter__()
+        self.assertNotIn("Running:", buf.getvalue())
+
+    def test_quiet_suppresses_wrote_lines(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False,
+                                  skip_sections=[], quiet=True)
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            f = Path(td) / "test.txt"
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._write_managed_text(str(f), "content\n")
+            self._suppress.__enter__()
+            self.assertTrue(f.exists())
+            self.assertNotIn("Wrote", buf.getvalue())
+
+    def test_non_quiet_shows_running_and_wrote(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False,
+                                  skip_sections=[], quiet=False)
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            import unittest.mock as _mock
+            mock_result = _mock.MagicMock()
+            mock_result.returncode = 0
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                with _mock.patch("subprocess.run", return_value=mock_result):
+                    d.run_cmd(["echo", "hello"])
+                f = Path(td) / "test.txt"
+                d._write_managed_text(str(f), "hello\n")
+            self._suppress.__enter__()
+            output = buf.getvalue()
+            self.assertIn("Running:", output)
+            self.assertIn("Wrote", output)
+
 
 class TestSummary(DriftifyTestCase):
     def test_summary_services_uses_stamp_data(self):

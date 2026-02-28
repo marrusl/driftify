@@ -132,6 +132,9 @@ class _C:
     CYAN   = "\033[36m"
     RESET  = "\033[0m"
 
+# TTY check runs once at import time against the real stdout.
+# Tests that redirect stdout via io.StringIO will still see ANSI codes
+# in captured output — this is harmless since no test asserts on colors.
 if not sys.stdout.isatty():
     _C.BOLD = _C.DIM = _C.GREEN = _C.YELLOW = _C.RED = ""
     _C.CYAN = _C.RESET = ""
@@ -278,12 +281,18 @@ class Driftify:
     }
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
-                 undo: bool = False, yes: bool = False):
+                 undo: bool = False, yes: bool = False,
+                 quiet: bool = False, verbose: bool = False):
         self.profile = profile
         self.dry_run = dry_run
         self.skip = set(skip_sections)
         self.undo_mode = undo
         self.yes = yes
+        self.quiet = quiet
+        # verbose: reserved for future use when capture=True calls are added;
+        # subprocess output currently passes through directly so --verbose
+        # has no additional effect today.
+        self.verbose = verbose
         self.stamp = StampFile()
         self.os_id, self.os_major = detect_os()
         self._t0 = None
@@ -300,12 +309,17 @@ class Driftify:
         return PROFILE_RANK[self.profile] >= PROFILE_RANK[level]
 
     def run_cmd(self, cmd, check=True, capture=False):
-        """Execute *cmd*, or print it if --dry-run."""
+        """Execute *cmd*, or print it if --dry-run.
+
+        With --quiet the "Running:" echo is suppressed; warnings and errors
+        still print.  [DRY RUN] lines are never suppressed.
+        """
         pretty = " ".join(str(c) for c in cmd)
         if self.dry_run:
             _dry(pretty)
             return None
-        _info(f"Running: {pretty}")
+        if not self.quiet:
+            _info(f"Running: {pretty}")
         result = subprocess.run(
             cmd, check=check,
             capture_output=capture, text=capture,
@@ -350,7 +364,13 @@ class Driftify:
         _info(f"Created dir {path}")
 
     def _write_managed_text(self, path_str: str, content: str, mode: int = 0o644) -> None:
-        """Write file with stamp tracking for created/modified files."""
+        """Write file with stamp tracking for created/modified files.
+
+        NOTE: reads existing content in text mode for change-detection and
+        backup.  Only suitable for text files — calling this on a binary
+        path would produce a corrupt backup and likely a UnicodeDecodeError.
+        All files driftify currently manages are text; keep it that way.
+        """
         path = Path(path_str)
         exists = path.exists()
 
@@ -376,7 +396,8 @@ class Driftify:
         os.chmod(path, mode)
         if not exists:
             self.stamp.record("files_created", str(path))
-        _info(f"Wrote {path}")
+        if not self.quiet:
+            _info(f"Wrote {path}")
 
     def _set_or_append_directive(self, path_str: str, key: str, line: str) -> None:
         """Set a config directive by key or append when missing (single directive)."""
@@ -448,7 +469,12 @@ class Driftify:
     # ── confirmation ──────────────────────────────────────────────────────
 
     def _run_description(self) -> list:
-        """Return bullet-point lines describing what this run will do."""
+        """Return bullet-point lines describing what this run will do.
+
+        NOTE: this method is a prose mirror of the drift_* methods.
+        When adding or changing what a section does at a given profile
+        level, update this method AND _print_summary() to match.
+        """
         lines = []
         active = [s for s in SECTIONS
                   if s in self._IMPLEMENTED and s not in self.skip]
@@ -2235,6 +2261,7 @@ def build_parser() -> argparse.ArgumentParser:
 examples:
   sudo ./driftify.py                          # standard profile (interactive confirm)
   sudo ./driftify.py -y                       # skip confirmation prompt
+  sudo ./driftify.py -q                       # quiet — section banners + errors only
   sudo ./driftify.py --profile minimal        # CI-friendly, fast
   sudo ./driftify.py --profile kitchen-sink   # everything
   sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
@@ -2265,6 +2292,16 @@ examples:
         "-y", "--yes", action="store_true",
         help="skip interactive confirmation prompt",
     )
+    p.add_argument(
+        "-q", "--quiet", action="store_true",
+        help="suppress per-command and per-file output; show only section "
+             "banners, warnings, and errors",
+    )
+    p.add_argument(
+        "--verbose", action="store_true",
+        help="reserved for future use (no effect today; subprocess output "
+             "already passes through directly)",
+    )
     return p
 
 
@@ -2287,6 +2324,8 @@ def main() -> None:
         skip_sections=skipped,
         undo=args.undo,
         yes=args.yes,
+        quiet=args.quiet,
+        verbose=args.verbose,
     )
 
     if args.undo:

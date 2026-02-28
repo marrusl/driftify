@@ -20,6 +20,7 @@ No dependencies beyond Python 3 (ships on every RHEL/CentOS Stream minimal insta
 ```
 sudo ./driftify.py                          # standard profile (interactive confirm)
 sudo ./driftify.py -y                       # skip confirmation prompt
+sudo ./driftify.py -q                       # quiet output
 sudo ./driftify.py --profile minimal        # CI-friendly, fast
 sudo ./driftify.py --profile kitchen-sink   # everything
 sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
@@ -36,6 +37,8 @@ sudo ./driftify.py --dry-run                # preview without changes
 | `--undo` | Reverse all modifications from the previous run (requires stamp file) |
 | `--dry-run` | Print commands without executing them |
 | `-y`, `--yes` | Skip interactive confirmation prompt |
+| `-q`, `--quiet` | Show only section banners, warnings, and errors |
+| `--verbose` | Reserved for future use |
 | `--help` | Show help |
 
 ### Sections
