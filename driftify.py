@@ -270,11 +270,12 @@ class Driftify:
     _IMPLEMENTED = {"rpm", "services", "config", "network", "storage", "secrets"}
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
-                 undo: bool = False):
+                 undo: bool = False, yes: bool = False):
         self.profile = profile
         self.dry_run = dry_run
         self.skip = set(skip_sections)
         self.undo_mode = undo
+        self.yes = yes
         self.stamp = StampFile()
         self.os_id, self.os_major = detect_os()
         self._t0 = None
@@ -436,6 +437,113 @@ class Driftify:
 
         self._write_managed_text(path_str, prefix + wrapped, mode=mode)
 
+    # ── confirmation ──────────────────────────────────────────────────────
+
+    def _run_description(self) -> list:
+        """Return bullet-point lines describing what this run will do."""
+        lines = []
+        active = [s for s in SECTIONS
+                  if s in self._IMPLEMENTED and s not in self.skip]
+
+        if "rpm" in active:
+            pkg_count = sum(
+                len(BASE_PACKAGES.get(lvl, []))
+                for lvl in PROFILES if self.needs_profile(lvl)
+            )
+            epel_count = sum(
+                len(EPEL_PACKAGES.get(lvl, []))
+                for lvl in PROFILES if self.needs_profile(lvl)
+            )
+            tiers = " + standard" if self.needs_profile("standard") else ""
+            ghost = ", ghost entry" if self.needs_profile("standard") else ""
+            lines.append(
+                f"Install ~{pkg_count + epel_count} packages "
+                f"(EPEL + base{tiers}{ghost})"
+            )
+
+        if "services" in active:
+            svcs = "Enable httpd, nginx; disable kdump"
+            if self.needs_profile("standard"):
+                svcs += "; mask bluetooth (if present)"
+            lines.append(svcs)
+
+        if "config" in active:
+            cfgs = "Modify RPM-owned configs (httpd, nginx"
+            if self.needs_profile("standard"):
+                cfgs += ", sshd, chrony"
+            if self.needs_profile("kitchen-sink"):
+                cfgs += ", limits, auditd"
+            cfgs += ") + drop /etc/myapp/ configs"
+            lines.append(cfgs)
+
+        if "network" in active:
+            net = "Add firewall rules (http, https, 8080/tcp), /etc/hosts entries"
+            if self.needs_profile("standard"):
+                net += ", NM profile, proxy"
+            if self.needs_profile("kitchen-sink"):
+                net += ", static route, direct.xml"
+            lines.append(net)
+
+        if "storage" in active:
+            sto = "Create /var/lib/myapp/, /var/log/myapp/ dirs"
+            if self.needs_profile("standard"):
+                sto += "; add NFS/CIFS entries to /etc/fstab"
+            lines.append(sto)
+
+        if "secrets" in active:
+            sec = "Plant fake credentials in /etc/myapp/ (AWS, PEM"
+            if self.needs_profile("standard"):
+                sec += ", GitHub token, Redis URL"
+            if self.needs_profile("kitchen-sink"):
+                sec += ", MongoDB URL, .env"
+            sec += ")"
+            lines.append(sec)
+
+        return lines
+
+    def _confirm(self, undo_mode: bool = False) -> None:
+        """Print a description of what will happen and ask for confirmation.
+
+        Exits immediately if the user declines.  Skipped when --yes or
+        --dry-run are active.
+        """
+        if self.yes or self.dry_run:
+            return
+
+        print()
+        if undo_mode:
+            started = self.stamp.data.get("started", "unknown time")
+            profile = self.stamp.data.get("profile", "unknown")
+            print(f"  {_C.BOLD}About to reverse the previous driftify run:{_C.RESET}")
+            print(f"    • Restore all backed-up config files to their original state")
+            print(f"    • Remove all files and dirs created by driftify")
+            print(f"    • Remove firewall rules added by driftify")
+            print(f"    • Disable/re-enable services changed by driftify")
+            print(f"    • Reverse dnf transactions from that run")
+            print()
+            print(f"  {_C.DIM}Stamp: {profile} profile, started {started}{_C.RESET}")
+        else:
+            print(f"  {_C.BOLD}About to apply {self.profile} profile drift "
+                  f"on {self.os_id} {self.os_major}:{_C.RESET}")
+            for line in self._run_description():
+                print(f"    • {line}")
+            print()
+            print(f"  {_C.DIM}Run --undo afterwards to reverse all changes.{_C.RESET}")
+
+        print()
+        try:
+            answer = input("  Proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            _info("Aborted.")
+            sys.exit(0)
+
+        if answer != "y":
+            _info("Aborted.")
+            sys.exit(0)
+
+        print()
+
     # ── apply entry point ─────────────────────────────────────────────────
 
     def _next_step(self, section_name: str) -> None:
@@ -456,6 +564,8 @@ class Driftify:
         if STAMP_PATH.exists():
             _warn(f"Existing stamp file at {STAMP_PATH} will be overwritten")
             _warn("(Run --undo first if you need to reverse the previous run)")
+
+        self._confirm(undo_mode=False)
 
         if not self.dry_run:
             self.stamp.start(self.profile, self.os_id, self.os_major)
@@ -492,6 +602,8 @@ class Driftify:
 
         _info(f"Stamp from {self.stamp.data.get('started', '?')}, "
               f"profile={self.stamp.data.get('profile', '?')}")
+
+        self._confirm(undo_mode=True)
 
         self._undo_filesystem()
         self._undo_network()
@@ -1154,7 +1266,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  sudo ./driftify.py                          # standard profile
+  sudo ./driftify.py                          # standard profile (interactive confirm)
+  sudo ./driftify.py -y                       # skip confirmation prompt
   sudo ./driftify.py --profile minimal        # CI-friendly, fast
   sudo ./driftify.py --profile kitchen-sink   # everything
   sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
@@ -1181,6 +1294,10 @@ examples:
         "--dry-run", action="store_true",
         help="print commands without executing them",
     )
+    p.add_argument(
+        "-y", "--yes", action="store_true",
+        help="skip interactive confirmation prompt (for scripted/CI use)",
+    )
     return p
 
 
@@ -1202,6 +1319,7 @@ def main() -> None:
         dry_run=args.dry_run,
         skip_sections=skipped,
         undo=args.undo,
+        yes=args.yes,
     )
 
     if args.undo:

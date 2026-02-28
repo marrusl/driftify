@@ -280,6 +280,85 @@ class TestHelpersAndDryRun(DriftifyTestCase):
             self.assertEqual(buf.getvalue(), "")
 
 
+class TestConfirmation(DriftifyTestCase):
+    def _make_drifter(self, yes=False, dry_run=False):
+        return driftify.Driftify("standard", dry_run=dry_run,
+                                 skip_sections=[], yes=yes)
+
+    def test_confirm_skipped_when_yes(self):
+        d = self._make_drifter(yes=True)
+        with unittest.mock.patch("builtins.input",
+                                 side_effect=AssertionError("input called")):
+            d._confirm()
+
+    def test_confirm_skipped_when_dry_run(self):
+        d = self._make_drifter(dry_run=True)
+        with unittest.mock.patch("builtins.input",
+                                 side_effect=AssertionError("input called")):
+            d._confirm()
+
+    def test_confirm_y_proceeds(self):
+        d = self._make_drifter()
+        with unittest.mock.patch("builtins.input", return_value="y"), \
+             unittest.mock.patch("builtins.print"):
+            d._confirm()
+
+    def test_confirm_n_exits(self):
+        d = self._make_drifter()
+        with unittest.mock.patch("builtins.input", return_value="n"), \
+             unittest.mock.patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                d._confirm()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_confirm_empty_exits(self):
+        d = self._make_drifter()
+        with unittest.mock.patch("builtins.input", return_value=""), \
+             unittest.mock.patch("builtins.print"):
+            with self.assertRaises(SystemExit):
+                d._confirm()
+
+    def test_confirm_eof_exits(self):
+        d = self._make_drifter()
+        with unittest.mock.patch("builtins.input", side_effect=EOFError), \
+             unittest.mock.patch("builtins.print"):
+            with self.assertRaises(SystemExit) as cm:
+                d._confirm()
+        self.assertEqual(cm.exception.code, 0)
+
+    def test_run_description_minimal(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        lines = d._run_description()
+        self.assertTrue(any("Install" in l for l in lines))
+        self.assertTrue(any("httpd" in l for l in lines))
+        self.assertFalse(any("sshd" in l for l in lines))
+        self.assertFalse(any("NM profile" in l for l in lines))
+
+    def test_run_description_standard(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        lines = d._run_description()
+        self.assertTrue(any("sshd" in l for l in lines))
+        self.assertTrue(any("NM profile" in l for l in lines))
+        self.assertTrue(any("GitHub token" in l for l in lines))
+
+    def test_run_description_respects_skips(self):
+        d = driftify.Driftify("standard", dry_run=True,
+                              skip_sections=["rpm", "network"])
+        lines = d._run_description()
+        self.assertFalse(any("Install" in l for l in lines))
+        self.assertFalse(any("firewall" in l for l in lines))
+        self.assertTrue(any("httpd" in l for l in lines))
+
+    def test_yes_flag_parsed(self):
+        p = driftify.build_parser()
+        args = p.parse_args(["-y"])
+        self.assertTrue(args.yes)
+        args = p.parse_args(["--yes"])
+        self.assertTrue(args.yes)
+        args = p.parse_args([])
+        self.assertFalse(args.yes)
+
+
 class TestSummary(DriftifyTestCase):
     def test_summary_services_uses_stamp_data(self):
         """Summary shows actual service counts from stamp, not hardcoded estimates."""
