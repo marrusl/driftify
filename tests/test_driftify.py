@@ -359,6 +359,33 @@ class TestUndoFilesystem(DriftifyTestCase):
             self.assertFalse(created.exists())
             self.assertEqual(changed.read_text(), "original\n")
 
+    def test_undo_filesystem_does_not_restore_driftify_created_files(self):
+        """Files in both files_created and file_backups should be deleted only.
+
+        This covers the case where drift_config creates a file and drift_secrets
+        later modifies it — the backup holds an intermediate driftify state, not
+        the pre-driftify state, so the file should just be removed on undo.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            # Simulate: driftify created this file, then modified it
+            app_conf = base / "app.conf"
+            app_conf.write_text("[app]\nname=driftify\n# BEGIN DRIFTIFY secrets\n")
+
+            driftify.STAMP_PATH = base / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.data = {
+                "files_created": [str(app_conf)],
+                "dirs_created": [],
+                # Backup was written when secrets section modified it —
+                # contains intermediate content, not original empty state
+                "file_backups": {str(app_conf): "[app]\nname=driftify\n"},
+            }
+            d._undo_filesystem()
+
+            # File must be gone — NOT restored from backup
+            self.assertFalse(app_conf.exists())
+
     def test_undo_filesystem_removes_created_dirs(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

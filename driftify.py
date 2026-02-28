@@ -995,6 +995,12 @@ domain=INTERNAL
 
         _banner(f"{_I.UNDO}  Undo: Filesystem")
 
+        # Files in both created_files and file_backups were created by
+        # driftify and then modified by a later section.  The backup holds
+        # an intermediate driftify state, not the original state.  Only
+        # the delete is needed — skip the restore for these paths.
+        created_files_set = set(created_files)
+
         for path_str in reversed(created_files):
             path = Path(path_str)
             if self.dry_run:
@@ -1005,6 +1011,9 @@ domain=INTERNAL
                 _info(f"Removed created file {path}")
 
         for path_str, original in backups.items():
+            if path_str in created_files_set:
+                _info(f"Skipping restore of driftify-created file {path_str}")
+                continue
             path = Path(path_str)
             if self.dry_run:
                 _dry(f"restore file {path}")
