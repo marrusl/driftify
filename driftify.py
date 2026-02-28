@@ -128,12 +128,11 @@ class _C:
     YELLOW = "\033[33m"
     RED    = "\033[31m"
     CYAN   = "\033[36m"
-    BLUE   = "\033[34m"
     RESET  = "\033[0m"
 
 if not sys.stdout.isatty():
     _C.BOLD = _C.DIM = _C.GREEN = _C.YELLOW = _C.RED = ""
-    _C.CYAN = _C.BLUE = _C.RESET = ""
+    _C.CYAN = _C.RESET = ""
 
 
 def _banner(title: str) -> None:
@@ -241,6 +240,8 @@ class StampFile:
             "file_backups": {},
             "users_created": [],
             "groups_created": [],
+            "firewall_services": [],
+            "firewall_ports": [],
             "selinux_booleans": [],
             "selinux_modules": [],
         }
@@ -251,13 +252,15 @@ class StampFile:
         self.save()
 
     def record(self, key: str, value) -> None:
-        """Append *value* to a list key, or set a scalar key."""
+        """Append *value* to a list key, or set a scalar key.
+
+        Mutates in-memory only.  Call ``save()`` at section boundaries.
+        """
         if isinstance(self.data.get(key), list):
             if value not in self.data[key]:
                 self.data[key].append(value)
         else:
             self.data[key] = value
-        self.save()
 
 
 # ── Driftify ─────────────────────────────────────────────────────────────────
@@ -474,6 +477,7 @@ class Driftify:
               f"profile={self.stamp.data.get('profile', '?')}")
 
         self._undo_filesystem()
+        self._undo_network()
         self._undo_services()
         self._undo_rpm()
 
@@ -545,6 +549,7 @@ class Driftify:
         if not self.dry_run:
             tid = self._dnf_last_tid()
             self.stamp.record("dnf_transaction_end", tid)
+            self.stamp.save()
 
     # ── Services ──────────────────────────────────────────────────────────
 
@@ -585,6 +590,9 @@ class Driftify:
                     self.stamp.record("services_masked", "bluetooth")
             else:
                 _warn("bluetooth unit not found — skipping mask")
+
+        if not self.dry_run:
+            self.stamp.save()
 
     # ── Config Files ───────────────────────────────────────────────────────
 
@@ -676,6 +684,9 @@ export LOG_LEVEL=info
             )
             self._set_or_append_directive("/etc/audit/auditd.conf", "max_log_file", "max_log_file = 64")
 
+        if not self.dry_run:
+            self.stamp.save()
+
     # ── Secrets ────────────────────────────────────────────────────────────
 
     def drift_secrets(self) -> None:
@@ -730,6 +741,9 @@ MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
                 mode=0o600,
             )
 
+        if not self.dry_run:
+            self.stamp.save()
+
     # ── Network ────────────────────────────────────────────────────────────
 
     def drift_network(self) -> None:
@@ -740,10 +754,20 @@ MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
         self._next_step("network")
 
         # Minimal: firewalld allowances
-        _info(f"{_I.GLOBE}  Adding firewalld rules (http, https, 8080/tcp)")
-        self.run_cmd(["firewall-cmd", "--permanent", "--add-service=http"], check=False)
-        self.run_cmd(["firewall-cmd", "--permanent", "--add-service=https"], check=False)
-        self.run_cmd(["firewall-cmd", "--permanent", "--add-port=8080/tcp"], check=False)
+        fw_services = ["http", "https"]
+        fw_ports = ["8080/tcp"]
+        _info(f"{_I.GLOBE}  Adding firewalld rules "
+              f"({', '.join(fw_services + fw_ports)})")
+        for svc in fw_services:
+            self.run_cmd(["firewall-cmd", "--permanent", f"--add-service={svc}"],
+                         check=False)
+            if not self.dry_run:
+                self.stamp.record("firewall_services", svc)
+        for port in fw_ports:
+            self.run_cmd(["firewall-cmd", "--permanent", f"--add-port={port}"],
+                         check=False)
+            if not self.dry_run:
+                self.stamp.record("firewall_ports", port)
         self.run_cmd(["firewall-cmd", "--reload"], check=False)
 
         # Minimal: /etc/hosts additions
@@ -818,6 +842,9 @@ export NO_PROXY=localhost,127.0.0.1,.internal
 """,
             )
 
+        if not self.dry_run:
+            self.stamp.save()
+
     # ── Storage ────────────────────────────────────────────────────────────
 
     def drift_storage(self) -> None:
@@ -868,6 +895,9 @@ domain=INTERNAL
 """,
             )
 
+        if not self.dry_run:
+            self.stamp.save()
+
     # ── Undo: Services ────────────────────────────────────────────────────
 
     def _undo_services(self) -> None:
@@ -892,6 +922,28 @@ domain=INTERNAL
         for svc in masked:
             _info(f"{_I.MASK}  Unmasking {svc}")
             self.run_cmd(["systemctl", "unmask", svc], check=False)
+
+    def _undo_network(self) -> None:
+        """Remove firewalld services/ports that were added."""
+        d = self.stamp.data
+        fw_services = d.get("firewall_services", [])
+        fw_ports = d.get("firewall_ports", [])
+
+        if not (fw_services or fw_ports):
+            return
+
+        _banner(f"{_I.UNDO}  Undo: Network (firewalld)")
+
+        for svc in fw_services:
+            _info(f"{_I.GLOBE}  Removing firewalld service {svc}")
+            self.run_cmd(["firewall-cmd", "--permanent", f"--remove-service={svc}"],
+                         check=False)
+        for port in fw_ports:
+            _info(f"{_I.GLOBE}  Removing firewalld port {port}")
+            self.run_cmd(["firewall-cmd", "--permanent", f"--remove-port={port}"],
+                         check=False)
+
+        self.run_cmd(["firewall-cmd", "--reload"], check=False)
 
     def _undo_filesystem(self) -> None:
         """Undo created files/dirs and restore original file contents."""
@@ -919,7 +971,7 @@ domain=INTERNAL
             if self.dry_run:
                 _dry(f"restore file {path}")
                 continue
-            self._ensure_dir(path.parent)
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w") as fh:
                 fh.write(original)
             _info(f"Restored original file {path}")
