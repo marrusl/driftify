@@ -43,18 +43,18 @@ class TestProfileAndSkipLogic(DriftifyTestCase):
         self.assertTrue(d.needs_profile("kitchen-sink"))
 
     def test_total_steps_respect_skip_flags(self):
-        # rpm, services, config, network, storage, scheduled, containers, kernel, selinux, users, secrets
+        # all 12 implemented sections
         d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        self.assertEqual(d._total, 11)
+        self.assertEqual(d._total, 12)
 
         d = driftify.Driftify("standard", dry_run=True, skip_sections=["network", "storage"])
-        self.assertEqual(d._total, 9)
+        self.assertEqual(d._total, 10)
 
         d = driftify.Driftify(
             "standard",
             dry_run=True,
             skip_sections=["rpm", "services", "config", "network",
-                           "storage", "scheduled", "containers",
+                           "storage", "scheduled", "containers", "nonrpm",
                            "kernel", "selinux", "users", "secrets"],
         )
         self.assertEqual(d._total, 0)
@@ -537,6 +537,136 @@ class TestUsers(DriftifyTestCase):
             d._undo_users()
         self._suppress.__enter__()
         self.assertEqual(buf.getvalue(), "")
+
+
+class TestNonRpm(DriftifyTestCase):
+    def _mock_nonrpm(self, d):
+        """Patch out subprocesses and downloads for nonrpm dry-run tests."""
+        d.run_cmd = lambda *a, **k: None
+        d._ensure_dir = lambda p: None
+        d._download_go_probe = lambda: None
+        d._create_npm_project = lambda: None
+
+    def test_nonrpm_minimal_dry_run_creates_venv(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_nonrpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/opt/myapp/venv", output)
+        self.assertIn("driftify-probe", output)
+
+    def test_nonrpm_standard_dry_run_creates_npm_git_deploy(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_nonrpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/opt/tools/some-tool", output)
+        self.assertIn("/usr/local/bin/deploy.sh", output)
+
+    def test_nonrpm_kitchen_sink_dry_run_creates_mystery_binary(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_nonrpm()
+        self._suppress.__enter__()
+        self.assertIn("mystery-tool", buf.getvalue())
+
+    def test_nonrpm_skip_flag_works(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=["nonrpm"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_nonrpm()
+        self._suppress.__enter__()
+        self.assertNotIn("/opt/myapp/venv", buf.getvalue())
+
+    def test_stamp_has_recursive_dirs_field(self):
+        with tempfile.TemporaryDirectory() as td:
+            sf = driftify.StampFile(Path(td) / "stamp.json")
+            sf.start("standard", "centos", 9)
+            self.assertIn("recursive_dirs_created", sf.data)
+            self.assertEqual(sf.data["recursive_dirs_created"], [])
+
+    def test_recursive_dirs_tracked_on_live_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            d.stamp.record("recursive_dirs_created", "/opt/myapp/venv")
+            d.stamp.save()
+            sf2 = driftify.StampFile(driftify.STAMP_PATH)
+            sf2.load()
+            self.assertIn("/opt/myapp/venv", sf2.data["recursive_dirs_created"])
+
+    def test_undo_filesystem_recursively_removes_nonrpm_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            venv_like = Path(td) / "venv"
+            venv_like.mkdir()
+            (venv_like / "bin").mkdir()
+            (venv_like / "bin" / "python3").write_text("stub")
+
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
+            d.stamp.data = {
+                "files_created": [],
+                "dirs_created": [],
+                "recursive_dirs_created": [str(venv_like)],
+                "file_backups": {},
+            }
+            d._undo_filesystem()
+            self.assertFalse(venv_like.exists())
+
+    def test_deploy_sh_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            files_written = {}
+
+            def patched_write(path_str, content, mode=0o644):
+                files_written[Path(path_str).name] = content
+
+            d._write_managed_text = patched_write
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+            d._download_go_probe = lambda: None
+            d._create_npm_project = lambda: None
+
+            with unittest.mock.patch("shutil.copy2"), \
+                 unittest.mock.patch("os.chmod"):
+                d.drift_nonrpm()
+
+            deploy = files_written.get("deploy.sh", "")
+            self.assertIn("#!/bin/sh", deploy)
+            self.assertIn("APP_DIR=/opt/myapp", deploy)
+            self.assertIn("systemctl start myapp", deploy)
+
+    def test_npm_package_json_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            files_written = {}
+
+            def patched_write(path_str, content, mode=0o644):
+                files_written[Path(path_str).name] = content
+
+            d._write_managed_text = patched_write
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+
+            d._create_npm_project()
+
+            pkg = files_written.get("package.json", "")
+            self.assertIn("express", pkg)
+            self.assertIn("lodash", pkg)
 
 
 class TestContainers(DriftifyTestCase):

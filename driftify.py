@@ -41,6 +41,7 @@ BASE_PACKAGES = {
     "standard": [
         "rsync", "lsof", "strace", "tcpdump", "nmap-ncat",
         "bash-completion", "man-pages", "info", "tree", "unzip", "at",
+        "nodejs",
     ],
     "kitchen-sink": [
         "gcc", "make", "kernel-devel", "gdb", "valgrind",
@@ -244,6 +245,7 @@ class StampFile:
             "firewall_services": [],
             "firewall_ports": [],
             "at_jobs": [],
+            "recursive_dirs_created": [],
             "selinux_booleans": [],
             "selinux_modules": [],
         }
@@ -271,7 +273,8 @@ class Driftify:
 
     _IMPLEMENTED = {
         "rpm", "services", "config", "network", "storage",
-        "scheduled", "containers", "kernel", "selinux", "users", "secrets",
+        "scheduled", "containers", "nonrpm", "kernel", "selinux",
+        "users", "secrets",
     }
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
@@ -501,6 +504,16 @@ class Driftify:
                 sch += ", systemd timer pair, at job, per-user crontab"
             lines.append(sch)
 
+        if "nonrpm" in active:
+            nrpm = "Create Python venv (/opt/myapp/venv) with flask/gunicorn/requests"
+            nrpm += ", download yq Go binary (/usr/local/bin/driftify-probe)"
+            if self.needs_profile("standard"):
+                nrpm += ", npm project (/opt/webapp/), git repo (/opt/tools/some-tool/)"
+                nrpm += ", deploy.sh script"
+            if self.needs_profile("kitchen-sink"):
+                nrpm += ", mystery binary (stripped)"
+            lines.append(nrpm)
+
         if "containers" in active:
             ctr = "Drop webapp.container quadlet in /etc/containers/systemd/"
             if self.needs_profile("standard"):
@@ -622,8 +635,7 @@ class Driftify:
         self.drift_containers()
         self.drift_kernel()
         self.drift_selinux()
-        # Future sections — will be added iteratively:
-        # self.drift_nonrpm()
+        self.drift_nonrpm()
         self.drift_users()
         self.drift_secrets()   # Must run after users (needs user homes for kitchen-sink secrets)
 
@@ -1440,6 +1452,144 @@ domain=INTERNAL
         if not self.dry_run:
             self.stamp.save()
 
+    # ── Non-RPM Software ──────────────────────────────────────────────────────
+
+    def drift_nonrpm(self) -> None:
+        if "nonrpm" in self.skip:
+            _skip("Skipping Non-RPM section (--skip-nonrpm)")
+            return
+
+        self._next_step("nonrpm")
+
+        # Minimal: Python venv with flask, gunicorn, requests
+        venv_path = "/opt/myapp/venv"
+        _info(f"{_I.PUZZLE}  Creating Python venv at {venv_path}")
+        self.run_cmd(["python3", "-m", "venv", venv_path], check=False)
+        self.run_cmd(
+            [f"{venv_path}/bin/pip", "install", "--quiet",
+             "flask", "gunicorn", "requests"],
+            check=False,
+        )
+        if not self.dry_run:
+            self.stamp.record("recursive_dirs_created", venv_path)
+
+        # Minimal: download yq as a real Go binary (gives yoinkc a
+        # .note.go.buildid ELF section to detect)
+        self._download_go_probe()
+
+        if self.needs_profile("standard"):
+            # npm project — nodejs installed via BASE_PACKAGES
+            self._create_npm_project()
+
+            # Git-initialised dir with a remote URL
+            git_dir = "/opt/tools/some-tool"
+            _info(f"{_I.PUZZLE}  Initialising git repo at {git_dir}")
+            self._ensure_dir(Path(git_dir))
+            self.run_cmd(["git", "-C", git_dir, "init", "--quiet"],
+                         check=False)
+            self.run_cmd(
+                ["git", "-C", git_dir, "remote", "add", "origin",
+                 "https://github.com/example/some-tool.git"],
+                check=False,
+            )
+            if not self.dry_run:
+                self.stamp.record("recursive_dirs_created", git_dir)
+
+            # Shell script at /usr/local/bin — non-binary script detection
+            self._write_managed_text(
+                "/usr/local/bin/deploy.sh",
+                "#!/bin/sh\n"
+                "# Deploy script — driftify synthetic fixture\n"
+                "# yoinkc should detect this as a non-RPM script\n"
+                "APP_DIR=/opt/myapp\n"
+                "VENV=${APP_DIR}/venv\n"
+                'echo "[deploy] Stopping service..."\n'
+                "systemctl stop myapp || true\n"
+                'echo "[deploy] Pulling latest code..."\n'
+                "git -C ${APP_DIR} pull\n"
+                'echo "[deploy] Installing dependencies..."\n'
+                "${VENV}/bin/pip install -r ${APP_DIR}/requirements.txt\n"
+                'echo "[deploy] Starting service..."\n'
+                "systemctl start myapp\n",
+                mode=0o755,
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            # Mystery binary: stripped copy of /usr/bin/true — no metadata,
+            # no build ID; yoinkc should flag this as unknown provenance
+            mystery = "/usr/local/bin/mystery-tool"
+            _info(f"{_I.PUZZLE}  Creating mystery binary at {mystery}")
+            if not self.dry_run:
+                import shutil as _shutil
+                _shutil.copy2("/usr/bin/true", mystery)
+                os.chmod(mystery, 0o755)
+                self.run_cmd(["strip", mystery], check=False)
+                self.stamp.record("files_created", mystery)
+            else:
+                _dry(f"cp /usr/bin/true {mystery} && strip {mystery}")
+
+        if not self.dry_run:
+            self.stamp.save()
+
+    def _download_go_probe(self) -> None:
+        """Download yq from GitHub releases as a real Go binary."""
+        import platform
+        import urllib.request
+
+        dest = "/usr/local/bin/driftify-probe"
+        arch_map = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+        arch = arch_map.get(platform.machine())
+
+        if arch is None:
+            _warn(f"Unsupported arch {platform.machine()} — skipping Go probe download")
+            return
+
+        url = (
+            f"https://github.com/mikefarah/yq/releases/latest/download/"
+            f"yq_linux_{arch}"
+        )
+
+        if self.dry_run:
+            _dry(f"download {url} → {dest}")
+            return
+
+        _info(f"{_I.DOWNLOAD}  Downloading yq ({arch}) → {dest}")
+        try:
+            urllib.request.urlretrieve(url, dest)
+            os.chmod(dest, 0o755)
+            self.stamp.record("files_created", dest)
+            _info(f"  Go binary written to {dest}")
+        except Exception as exc:
+            _warn(f"yq download failed: {exc}")
+
+    def _create_npm_project(self) -> None:
+        """Create a minimal npm project at /opt/webapp/."""
+        npm_dir = "/opt/webapp"
+        _info(f"{_I.PUZZLE}  Creating npm project at {npm_dir}")
+        self._ensure_dir(Path(npm_dir))
+        self._write_managed_text(
+            f"{npm_dir}/package.json",
+            '{\n'
+            '  "name": "myapp-web",\n'
+            '  "version": "1.0.0",\n'
+            '  "description": "Driftify synthetic npm project",\n'
+            '  "main": "index.js",\n'
+            '  "scripts": {\n'
+            '    "start": "node index.js"\n'
+            '  },\n'
+            '  "dependencies": {\n'
+            '    "express": "^4.18.0",\n'
+            '    "lodash": "^4.17.21"\n'
+            '  }\n'
+            '}\n',
+        )
+        self.run_cmd(
+            ["npm", "install", "--prefix", npm_dir, "--quiet"],
+            check=False,
+        )
+        if not self.dry_run:
+            self.stamp.record("recursive_dirs_created", npm_dir)
+
     # ── Kernel / Boot ──────────────────────────────────────────────────────
 
     def drift_kernel(self) -> None:
@@ -1744,12 +1894,14 @@ domain=INTERNAL
 
     def _undo_filesystem(self) -> None:
         """Undo created files/dirs and restore original file contents."""
+        import shutil as _shutil
         d = self.stamp.data
         created_files = d.get("files_created", [])
         created_dirs = d.get("dirs_created", [])
+        recursive_dirs = d.get("recursive_dirs_created", [])
         backups = d.get("file_backups", {})
 
-        if not (created_files or created_dirs or backups):
+        if not (created_files or created_dirs or recursive_dirs or backups):
             return
 
         _banner(f"{_I.UNDO}  Undo: Filesystem")
@@ -1793,6 +1945,17 @@ domain=INTERNAL
                     _info(f"Removed created dir {path}")
                 except OSError:
                     _warn(f"Directory not empty, leaving {path}")
+
+        # Recursively remove trees explicitly created by driftify
+        # (venvs, node_modules, git-init'd dirs, etc.)
+        for path_str in sorted(recursive_dirs, key=len, reverse=True):
+            path = Path(path_str)
+            if self.dry_run:
+                _dry(f"rm -rf {path}")
+                continue
+            if path.exists():
+                _shutil.rmtree(path)
+                _info(f"Removed created directory tree {path}")
 
     # ── Undo: RPM ─────────────────────────────────────────────────────────
 
@@ -1928,6 +2091,18 @@ domain=INTERNAL
         else:
             usr_str = "skipped"
         _info(f"{SECTION_ICONS['users']}  Users:      {usr_str}")
+
+        # Non-RPM stats
+        if "nonrpm" not in self.skip:
+            nrpm_parts = ["Python venv (flask/gunicorn/requests)", "Go binary (yq)"]
+            if self.needs_profile("standard"):
+                nrpm_parts += ["npm project", "git repo", "deploy.sh"]
+            if self.needs_profile("kitchen-sink"):
+                nrpm_parts.append("mystery binary")
+            nrpm_str = ", ".join(nrpm_parts)
+        else:
+            nrpm_str = "skipped"
+        _info(f"{SECTION_ICONS['nonrpm']}  Non-RPM:    {nrpm_str}")
 
         # Kernel stats
         if "kernel" not in self.skip:

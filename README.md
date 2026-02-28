@@ -95,7 +95,7 @@ Sections are being implemented iteratively:
 - [x] 💾 Storage
 - [x] ⏰ Scheduled Tasks
 - [x] 🦭 Containers
-- [ ] 🧩 Non-RPM Software
+- [x] 🧩 Non-RPM Software
 - [x] 🐧 Kernel / Boot
 - [x] 🛡️ SELinux / Security
 - [x] 👥 Users / Groups
