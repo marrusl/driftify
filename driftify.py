@@ -45,6 +45,7 @@ BASE_PACKAGES = {
     "kitchen-sink": [
         "gcc", "make", "kernel-devel", "gdb", "valgrind",
         "cmake", "autoconf", "automake", "libtool", "pkgconfig",
+        "checkpolicy", "policycoreutils-python-utils",
     ],
 }
 
@@ -270,7 +271,7 @@ class Driftify:
 
     _IMPLEMENTED = {
         "rpm", "services", "config", "network", "storage",
-        "scheduled", "users", "secrets",
+        "scheduled", "containers", "kernel", "selinux", "users", "secrets",
     }
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
@@ -500,6 +501,30 @@ class Driftify:
                 sch += ", systemd timer pair, at job, per-user crontab"
             lines.append(sch)
 
+        if "containers" in active:
+            ctr = "Drop webapp.container quadlet in /etc/containers/systemd/"
+            if self.needs_profile("standard"):
+                ctr += ", redis.container, myapp.network, docker-compose.yml"
+            if self.needs_profile("kitchen-sink"):
+                ctr += ", user-level quadlet (~appuser)"
+            lines.append(ctr)
+
+        if "kernel" in active:
+            ker = "Apply 6 sysctl overrides (/etc/sysctl.d/99-driftify.conf)"
+            if self.needs_profile("standard"):
+                ker += ", load br_netfilter, dracut config"
+            if self.needs_profile("kitchen-sink"):
+                ker += ", add grub kernel args (panic=60 audit=1)"
+            lines.append(ker)
+
+        if "selinux" in active:
+            sel = "Set httpd_can_network_connect=on"
+            if self.needs_profile("standard"):
+                sel += ", httpd_can_network_relay=on, custom audit rules"
+            if self.needs_profile("kitchen-sink"):
+                sel += ", install custom SELinux module"
+            lines.append(sel)
+
         if "users" in active:
             usr = "Create appuser (UID 1001) + appgroup (GID 1001)"
             if self.needs_profile("standard"):
@@ -594,11 +619,11 @@ class Driftify:
         self.drift_network()
         self.drift_storage()
         self.drift_scheduled()
+        self.drift_containers()
+        self.drift_kernel()
+        self.drift_selinux()
         # Future sections — will be added iteratively:
-        # self.drift_containers()
         # self.drift_nonrpm()
-        # self.drift_kernel()
-        # self.drift_selinux()
         self.drift_users()
         self.drift_secrets()   # Must run after users (needs user homes for kitchen-sink secrets)
 
@@ -633,6 +658,8 @@ class Driftify:
             self.run_cmd(["systemctl", "daemon-reload"], check=False)
 
         self._undo_scheduled()
+        self._undo_selinux()
+        self._undo_kernel()
         self._undo_users()
         self._undo_network()
         self._undo_services()
@@ -1282,6 +1309,371 @@ domain=INTERNAL
             _info(f"{_I.CLOCK}  Removing at job {job_id}")
             self.run_cmd(["atrm", str(job_id)], check=False)
 
+    # ── Containers ─────────────────────────────────────────────────────────
+
+    def drift_containers(self) -> None:
+        if "containers" in self.skip:
+            _skip("Skipping Containers section (--skip-containers)")
+            return
+
+        self._next_step("containers")
+
+        # Minimal: webapp quadlet — exercises Image, ports, env (with secret),
+        # volumes with :Z, Network reference, AutoUpdate
+        self._ensure_dir(Path("/etc/containers/systemd"))
+        self._write_managed_text(
+            "/etc/containers/systemd/webapp.container",
+            "[Unit]\n"
+            "Description=Web Application\n"
+            "After=network-online.target\n"
+            "\n"
+            "[Container]\n"
+            "Image=registry.example.com/myorg/webapp:v2.1.3\n"
+            "PublishPort=8080:8080\n"
+            "PublishPort=8443:8443\n"
+            "Environment=APP_ENV=production\n"
+            "Environment=LOG_LEVEL=info\n"
+            "# This fake secret should trigger yoinkc's redaction\n"
+            "Environment=DATABASE_URL=postgresql://dbuser:s3cret@db.internal:5432/myapp\n"
+            "Volume=/var/lib/myapp/data:/app/data:Z\n"
+            "Volume=/var/log/myapp:/app/logs:Z\n"
+            "Network=myapp.network\n"
+            "AutoUpdate=registry\n"
+            "\n"
+            "[Service]\n"
+            "Restart=always\n"
+            "TimeoutStartSec=300\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target default.target\n",
+        )
+
+        if self.needs_profile("standard"):
+            # redis quadlet — exercises docker.io registry, localhost port
+            # binding, named volume, healthcheck fields
+            self._write_managed_text(
+                "/etc/containers/systemd/redis.container",
+                "[Unit]\n"
+                "Description=Redis Cache\n"
+                "Before=webapp.service\n"
+                "\n"
+                "[Container]\n"
+                "Image=docker.io/library/redis:7-alpine\n"
+                "PublishPort=127.0.0.1:6379:6379\n"
+                "Volume=redis-data.volume:/data:Z\n"
+                "Environment=REDIS_PASSWORD=DRIFTIFY_FAKE_r3d1s_p4ss\n"
+                "# Exercises healthcheck detection\n"
+                "HealthCmd=/usr/local/bin/redis-cli ping\n"
+                "HealthInterval=10s\n"
+                "\n"
+                "[Service]\n"
+                "Restart=always\n"
+                "\n"
+                "[Install]\n"
+                "WantedBy=multi-user.target default.target\n",
+            )
+
+            # network quadlet — exercises .network unit type, subnet config
+            self._write_managed_text(
+                "/etc/containers/systemd/myapp.network",
+                "[Unit]\n"
+                "Description=Application Network\n"
+                "\n"
+                "[Network]\n"
+                "Subnet=10.89.1.0/24\n"
+                "Gateway=10.89.1.1\n"
+                "Label=app=myapp\n",
+            )
+
+            # docker-compose.yml — exercises compose detection in /opt,
+            # multi-service image: extraction, secret in env
+            self._ensure_dir(Path("/opt/myapp"))
+            self._write_managed_text(
+                "/opt/myapp/docker-compose.yml",
+                "# Legacy compose file — should be converted to quadlets\n"
+                "version: \"3.8\"\n"
+                "services:\n"
+                "  app:\n"
+                "    image: registry.example.com/myorg/webapp:v2.1.3\n"
+                "    ports:\n"
+                "      - \"9090:8080\"\n"
+                "    environment:\n"
+                "      - APP_ENV=staging\n"
+                "    volumes:\n"
+                "      - ./data:/app/data\n"
+                "    depends_on:\n"
+                "      - db\n"
+                "  db:\n"
+                "    image: docker.io/library/postgres:16\n"
+                "    environment:\n"
+                "      POSTGRES_PASSWORD: DRIFTIFY_FAKE_pgpass123\n"
+                "    volumes:\n"
+                "      - pgdata:/var/lib/postgresql/data\n"
+                "volumes:\n"
+                "  pgdata:\n",
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            # User-level quadlet — exercises UID 1000-59999 path scan,
+            # %h specifier, quay.io as third registry variant
+            user_quadlet_dir = Path("/home/appuser/.config/containers/systemd")
+            self._ensure_dir(user_quadlet_dir)
+            self._write_managed_text(
+                str(user_quadlet_dir / "dev-tools.container"),
+                "[Unit]\n"
+                "Description=Development tools (user-level)\n"
+                "\n"
+                "[Container]\n"
+                "Image=quay.io/toolbox/toolbox:latest\n"
+                "Volume=%h/projects:/projects:Z\n"
+                "\n"
+                "[Install]\n"
+                "WantedBy=default.target\n",
+            )
+            if not self.dry_run:
+                self.run_cmd(
+                    ["chown", "-R", "appuser:appgroup",
+                     str(user_quadlet_dir.parent.parent.parent)],
+                    check=False,
+                )
+
+        if not self.dry_run:
+            self.stamp.save()
+
+    # ── Kernel / Boot ──────────────────────────────────────────────────────
+
+    def drift_kernel(self) -> None:
+        if "kernel" in self.skip:
+            _skip("Skipping Kernel section (--skip-kernel)")
+            return
+
+        self._next_step("kernel")
+
+        # Minimal: sysctl overrides
+        self._write_managed_text(
+            "/etc/sysctl.d/99-driftify.conf",
+            "# Network performance tuning — driftify synthetic fixture\n"
+            "# yoinkc should detect these as non-default sysctl values\n"
+            "net.core.somaxconn = 4096\n"
+            "net.ipv4.tcp_max_syn_backlog = 8192\n"
+            "net.ipv4.ip_local_port_range = 1024 65535\n"
+            "vm.swappiness = 10\n"
+            "fs.file-max = 2097152\n"
+            "net.ipv4.tcp_keepalive_time = 600\n",
+        )
+        _info(f"{_I.LINUX}  Applying sysctls live")
+        self.run_cmd(["sysctl", "-p", "/etc/sysctl.d/99-driftify.conf"],
+                     check=False)
+
+        if self.needs_profile("standard"):
+            # Module load config
+            self._write_managed_text(
+                "/etc/modules-load.d/driftify.conf",
+                "# Kernel modules — driftify synthetic fixture\n"
+                "# yoinkc should flag br_netfilter as explicitly configured\n"
+                "br_netfilter\n",
+            )
+            _info(f"{_I.LINUX}  Loading br_netfilter")
+            self.run_cmd(["modprobe", "br_netfilter"], check=False)
+
+            # Dracut config
+            self._write_managed_text(
+                "/etc/dracut.conf.d/driftify.conf",
+                "# Custom dracut config — driftify synthetic fixture\n"
+                'add_drivers+=" overlay "\n'
+                'compress="gzip"\n',
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            self._append_kernel_cmdline_arg("panic=60 audit=1")
+
+        if not self.dry_run:
+            self.stamp.save()
+
+    def _append_kernel_cmdline_arg(self, args: str) -> None:
+        """Append args to GRUB_CMDLINE_LINUX in /etc/default/grub."""
+        grub_path = "/etc/default/grub"
+        path = Path(grub_path)
+        if not path.exists():
+            _warn("/etc/default/grub not found — skipping grub modification")
+            return
+        with open(path) as fh:
+            content = fh.read()
+
+        def _append(m):
+            existing = m.group(1).rstrip()
+            sep = " " if existing else ""
+            return f'GRUB_CMDLINE_LINUX="{existing}{sep}{args}"'
+
+        new_content, n = re.subn(
+            r'GRUB_CMDLINE_LINUX="([^"]*)"', _append, content
+        )
+        if n == 0:
+            _warn("GRUB_CMDLINE_LINUX not found — skipping grub modification")
+            return
+        self._write_managed_text(grub_path, new_content)
+
+    # ── SELinux / Security ─────────────────────────────────────────────────
+
+    def drift_selinux(self) -> None:
+        if "selinux" in self.skip:
+            _skip("Skipping SELinux section (--skip-selinux)")
+            return
+
+        self._next_step("selinux")
+
+        # Minimal: non-default SELinux boolean
+        _info(f"{_I.SHIELD}  Setting httpd_can_network_connect on")
+        self.run_cmd(
+            ["setsebool", "-P", "httpd_can_network_connect", "on"],
+            check=False,
+        )
+        if not self.dry_run:
+            self.stamp.record("selinux_booleans", "httpd_can_network_connect")
+
+        if self.needs_profile("standard"):
+            _info(f"{_I.SHIELD}  Setting httpd_can_network_relay on")
+            self.run_cmd(
+                ["setsebool", "-P", "httpd_can_network_relay", "on"],
+                check=False,
+            )
+            if not self.dry_run:
+                self.stamp.record("selinux_booleans", "httpd_can_network_relay")
+
+            # Custom audit rules
+            self._ensure_dir(Path("/etc/audit/rules.d"))
+            self._write_managed_text(
+                "/etc/audit/rules.d/driftify.rules",
+                "# Custom audit rules — driftify synthetic fixture\n"
+                "-a always,exit -F arch=b64 -S open"
+                " -F dir=/etc/myapp -F success=1 -k myapp-config\n"
+                "-a always,exit -F arch=b64 -S execve"
+                " -F uid=1001 -k appuser-exec\n",
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            self._install_selinux_module()
+
+        if not self.dry_run:
+            self.stamp.save()
+
+    def _install_selinux_module(self) -> None:
+        """Compile and install a minimal custom SELinux policy module."""
+        import shutil
+        import tempfile
+
+        for tool in ("checkmodule", "semodule_package"):
+            if not shutil.which(tool):
+                _warn(f"{tool} not found — skipping SELinux module install")
+                return
+
+        te_src = (
+            "module myapp 1.0;\n\n"
+            "require {\n"
+            "    type httpd_t;\n"
+            "    type http_port_t;\n"
+            "    class tcp_socket name_connect;\n"
+            "}\n\n"
+            "allow httpd_t http_port_t:tcp_socket name_connect;\n"
+        )
+
+        if self.dry_run:
+            _dry("compile + semodule -i myapp.pp")
+            return
+
+        td = tempfile.mkdtemp(prefix="driftify-selinux-")
+        try:
+            te  = os.path.join(td, "myapp.te")
+            mod = os.path.join(td, "myapp.mod")
+            pp  = os.path.join(td, "myapp.pp")
+            with open(te, "w") as fh:
+                fh.write(te_src)
+            r = subprocess.run(
+                ["checkmodule", "-M", "-m", "-o", mod, te],
+                check=False, capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                _warn(f"checkmodule failed: {r.stderr.strip()}")
+                return
+            r = subprocess.run(
+                ["semodule_package", "-o", pp, "-m", mod],
+                check=False, capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                _warn(f"semodule_package failed: {r.stderr.strip()}")
+                return
+            r = subprocess.run(
+                ["semodule", "-i", pp],
+                check=False, capture_output=True, text=True,
+            )
+            if r.returncode != 0:
+                _warn(f"semodule -i failed: {r.stderr.strip()}")
+                return
+            _info(f"{_I.SHIELD}  Installed SELinux module: myapp")
+            self.stamp.record("selinux_modules", "myapp")
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(td, ignore_errors=True)
+
+    # ── Undo: Kernel / Boot ────────────────────────────────────────────────
+
+    def _undo_kernel(self) -> None:
+        created = self.stamp.data.get("files_created", [])
+        # The sysctl and modules files are already removed by _undo_filesystem.
+        # Reapply remaining sysctl config so live values revert.
+        sysctl_removed = any("/sysctl.d/" in f for f in created)
+        modules_removed = any("/modules-load.d/" in f for f in created)
+        grub_modified = "/etc/default/grub" in self.stamp.data.get(
+            "file_backups", {}
+        )
+
+        if not (sysctl_removed or modules_removed or grub_modified):
+            return
+
+        _banner(f"{_I.UNDO}  Undo: Kernel / Boot")
+
+        if sysctl_removed:
+            _info(f"{_I.LINUX}  Reapplying remaining sysctls (reverting live values)")
+            self.run_cmd(["sysctl", "--system"], check=False)
+
+        if modules_removed:
+            _info(f"{_I.LINUX}  Attempting to unload br_netfilter")
+            self.run_cmd(["modprobe", "-r", "br_netfilter"], check=False)
+
+        if grub_modified:
+            _info(f"{_I.LINUX}  Regenerating grub.cfg after /etc/default/grub restore")
+            _GRUB_CFG_PATHS = [
+                "/boot/grub2/grub.cfg",
+                "/boot/efi/EFI/centos/grub.cfg",
+                "/boot/efi/EFI/redhat/grub.cfg",
+            ]
+            for cfg in _GRUB_CFG_PATHS:
+                if Path(cfg).exists():
+                    self.run_cmd(["grub2-mkconfig", "-o", cfg], check=False)
+                    break
+            else:
+                _warn("Could not locate grub.cfg — run grub2-mkconfig manually")
+
+    # ── Undo: SELinux / Security ───────────────────────────────────────────
+
+    def _undo_selinux(self) -> None:
+        d = self.stamp.data
+        booleans = d.get("selinux_booleans", [])
+        modules  = d.get("selinux_modules",  [])
+
+        if not (booleans or modules):
+            return
+
+        _banner(f"{_I.UNDO}  Undo: SELinux / Security")
+
+        for boolean in booleans:
+            _info(f"{_I.SHIELD}  Resetting {boolean} to off")
+            self.run_cmd(["setsebool", "-P", boolean, "off"], check=False)
+
+        for module in modules:
+            _info(f"{_I.SHIELD}  Removing SELinux module {module}")
+            self.run_cmd(["semodule", "-r", module], check=False)
+
     # ── Undo: Users / Groups ───────────────────────────────────────────────
 
     def _undo_users(self) -> None:
@@ -1507,6 +1899,18 @@ domain=INTERNAL
             sch_str = "skipped"
         _info(f"{SECTION_ICONS['scheduled']}  Scheduled:  {sch_str}")
 
+        # Containers stats
+        if "containers" not in self.skip:
+            ctr_parts = ["1 quadlet (.container)"]
+            if self.needs_profile("standard"):
+                ctr_parts += ["redis.container", "myapp.network", "docker-compose.yml"]
+            if self.needs_profile("kitchen-sink"):
+                ctr_parts.append("user-level quadlet")
+            ctr_str = ", ".join(ctr_parts)
+        else:
+            ctr_str = "skipped"
+        _info(f"{SECTION_ICONS['containers']}  Containers: {ctr_str}")
+
         # Users stats — use stamp data when available
         if "users" not in self.skip:
             if d:
@@ -1524,6 +1928,36 @@ domain=INTERNAL
         else:
             usr_str = "skipped"
         _info(f"{SECTION_ICONS['users']}  Users:      {usr_str}")
+
+        # Kernel stats
+        if "kernel" not in self.skip:
+            ker_parts = ["6 sysctl values applied"]
+            if self.needs_profile("standard"):
+                ker_parts += ["br_netfilter loaded", "dracut config"]
+            if self.needs_profile("kitchen-sink"):
+                ker_parts.append("grub args")
+            ker_str = ", ".join(ker_parts)
+        else:
+            ker_str = "skipped"
+        _info(f"{SECTION_ICONS['kernel']}  Kernel:     {ker_str}")
+
+        # SELinux stats — use stamp data when available
+        if "selinux" not in self.skip:
+            if d:
+                nb = len(d.get("selinux_booleans", []))
+                nm = len(d.get("selinux_modules", []))
+            else:
+                nb = 1 + (1 if self.needs_profile("standard") else 0)
+                nm = 1 if self.needs_profile("kitchen-sink") else 0
+            sel_parts = []
+            if nb: sel_parts.append(f"{nb} boolean(s) set")
+            if nb >= 2 or self.needs_profile("standard"):
+                sel_parts.append("audit rules")
+            if nm: sel_parts.append(f"{nm} policy module(s)")
+            sel_str = ", ".join(sel_parts) if sel_parts else "none"
+        else:
+            sel_str = "skipped"
+        _info(f"{SECTION_ICONS['selinux']}  SELinux:    {sel_str}")
 
         # Secrets stats
         sec = "skipped" if "secrets" in self.skip else "fake secrets planted"

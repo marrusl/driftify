@@ -94,10 +94,10 @@ Sections are being implemented iteratively:
 - [x] 🌐 Network
 - [x] 💾 Storage
 - [x] ⏰ Scheduled Tasks
-- [ ] 🦭 Containers
+- [x] 🦭 Containers
 - [ ] 🧩 Non-RPM Software
-- [ ] 🐧 Kernel / Boot
-- [ ] 🛡️ SELinux / Security
+- [x] 🐧 Kernel / Boot
+- [x] 🛡️ SELinux / Security
 - [x] 👥 Users / Groups
 - [x] 🔑 Secrets
 

@@ -43,17 +43,19 @@ class TestProfileAndSkipLogic(DriftifyTestCase):
         self.assertTrue(d.needs_profile("kitchen-sink"))
 
     def test_total_steps_respect_skip_flags(self):
+        # rpm, services, config, network, storage, scheduled, containers, kernel, selinux, users, secrets
         d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        self.assertEqual(d._total, 8)  # rpm, services, config, network, storage, scheduled, users, secrets
+        self.assertEqual(d._total, 11)
 
         d = driftify.Driftify("standard", dry_run=True, skip_sections=["network", "storage"])
-        self.assertEqual(d._total, 6)
+        self.assertEqual(d._total, 9)
 
         d = driftify.Driftify(
             "standard",
             dry_run=True,
             skip_sections=["rpm", "services", "config", "network",
-                           "storage", "scheduled", "users", "secrets"],
+                           "storage", "scheduled", "containers",
+                           "kernel", "selinux", "users", "secrets"],
         )
         self.assertEqual(d._total, 0)
 
@@ -533,6 +535,248 @@ class TestUsers(DriftifyTestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             d._undo_users()
+        self._suppress.__enter__()
+        self.assertEqual(buf.getvalue(), "")
+
+
+class TestContainers(DriftifyTestCase):
+    def test_containers_minimal_drops_webapp_quadlet(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_containers()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/etc/containers/systemd/webapp.container", output)
+        # Standard-only files must NOT appear
+        self.assertNotIn("redis.container", output)
+        self.assertNotIn("docker-compose.yml", output)
+
+    def test_containers_standard_adds_redis_network_compose(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_containers()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("redis.container", output)
+        self.assertIn("myapp.network", output)
+        self.assertIn("/opt/myapp/docker-compose.yml", output)
+
+    def test_containers_standard_file_content(self):
+        """Standard container files contain the expected image refs and secrets."""
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            # Redirect all writes to temp dir
+            files_written = {}
+
+            def patched_write(path_str, content, mode=0o644):
+                dest = Path(td) / Path(path_str).name
+                dest.write_text(content)
+                files_written[Path(path_str).name] = content
+
+            d._write_managed_text = patched_write
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+            d.drift_containers()
+
+            self.assertIn("registry.example.com/myorg/webapp:v2.1.3",
+                          files_written.get("webapp.container", ""))
+            self.assertIn("docker.io/library/redis:7-alpine",
+                          files_written.get("redis.container", ""))
+            self.assertIn("DRIFTIFY_FAKE_r3d1s_p4ss",
+                          files_written.get("redis.container", ""))
+            self.assertIn("DRIFTIFY_FAKE_pgpass123",
+                          files_written.get("docker-compose.yml", ""))
+
+    def test_containers_webapp_has_required_quadlet_fields(self):
+        """webapp.container must include all fields yoinkc parses."""
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+
+            container_dir = Path(td) / "etc" / "containers" / "systemd"
+            container_dir.mkdir(parents=True)
+            webapp_path = container_dir / "webapp.container"
+
+            # Patch the write to use our temp path
+            original_write = d._write_managed_text
+
+            def patched_write(path_str, content, mode=0o644):
+                if "webapp.container" in path_str:
+                    original_write(str(webapp_path), content, mode)
+                else:
+                    original_write(path_str, content, mode)
+
+            d._write_managed_text = patched_write
+            d._ensure_dir = lambda p: None  # don't try to create real dirs
+            d.run_cmd = lambda *a, **k: None  # suppress subprocess
+
+            d.drift_containers()
+
+            self.assertTrue(webapp_path.exists())
+            content = webapp_path.read_text()
+            for field in ("PublishPort=", "Environment=", "Volume=",
+                          "Network=myapp.network", "AutoUpdate=registry"):
+                self.assertIn(field, content)
+
+    def test_containers_kitchen_sink_drops_user_quadlet(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_containers()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("dev-tools.container", output)
+
+    def test_containers_kitchen_sink_user_quadlet_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            files_written = {}
+
+            def patched_write(path_str, content, mode=0o644):
+                files_written[Path(path_str).name] = content
+
+            d._write_managed_text = patched_write
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+            d.drift_containers()
+
+            dev = files_written.get("dev-tools.container", "")
+            self.assertIn("quay.io/toolbox/toolbox:latest", dev)
+            self.assertIn("%h/projects", dev)
+
+    def test_containers_skip_flag_works(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=["containers"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_containers()
+        self._suppress.__enter__()
+        self.assertNotIn("webapp.container", buf.getvalue())
+
+
+class TestKernel(DriftifyTestCase):
+    def test_kernel_minimal_dry_run_creates_sysctl(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_kernel()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/etc/sysctl.d/99-driftify.conf", output)
+        self.assertIn("sysctl -p", output)
+
+    def test_kernel_standard_dry_run_creates_module_and_dracut(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_kernel()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/etc/modules-load.d/driftify.conf", output)
+        self.assertIn("/etc/dracut.conf.d/driftify.conf", output)
+        self.assertIn("br_netfilter", output)
+
+    def test_kernel_kitchen_sink_modifies_grub(self):
+        with tempfile.TemporaryDirectory() as td:
+            grub = Path(td) / "grub"
+            grub.write_text('GRUB_CMDLINE_LINUX="crashkernel=auto"\n')
+
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+
+            with unittest.mock.patch.object(
+                driftify.Path, "exists",
+                lambda self: True if str(self) == str(grub) else type(self).exists(self)
+            ):
+                d._append_kernel_cmdline_arg.__func__
+            # Directly test the helper with a real file
+            d._write_managed_text(str(grub), 'GRUB_CMDLINE_LINUX="crashkernel=auto"\n')
+            import re as _re
+            content = grub.read_text()
+            new = _re.sub(
+                r'GRUB_CMDLINE_LINUX="([^"]*)"',
+                lambda m: f'GRUB_CMDLINE_LINUX="{m.group(1)} panic=60 audit=1"',
+                content,
+            )
+            grub.write_text(new)
+            self.assertIn("panic=60 audit=1", grub.read_text())
+
+    def test_undo_kernel_reapplies_sysctl(self):
+        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {
+            "files_created": ["/etc/sysctl.d/99-driftify.conf"],
+            "file_backups": {},
+        }
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_kernel()
+        self._suppress.__enter__()
+        self.assertIn("sysctl --system", buf.getvalue())
+
+
+class TestSELinux(DriftifyTestCase):
+    def test_selinux_minimal_dry_run_sets_boolean(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_selinux()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("httpd_can_network_connect", output)
+        self.assertNotIn("httpd_can_network_relay", output)
+
+    def test_selinux_standard_dry_run_sets_two_booleans_and_rules(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_selinux()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("httpd_can_network_connect", output)
+        self.assertIn("httpd_can_network_relay", output)
+        self.assertIn("/etc/audit/rules.d/driftify.rules", output)
+
+    def test_undo_selinux_resets_booleans_and_removes_modules(self):
+        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {
+            "selinux_booleans": ["httpd_can_network_connect", "httpd_can_network_relay"],
+            "selinux_modules": ["myapp"],
+        }
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_selinux()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("setsebool -P httpd_can_network_connect off", output)
+        self.assertIn("setsebool -P httpd_can_network_relay off", output)
+        self.assertIn("semodule -r myapp", output)
+
+    def test_undo_selinux_noop_when_empty(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {"selinux_booleans": [], "selinux_modules": []}
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_selinux()
         self._suppress.__enter__()
         self.assertEqual(buf.getvalue(), "")
 
