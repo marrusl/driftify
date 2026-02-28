@@ -637,7 +637,10 @@ class Driftify:
         self.drift_selinux()
         self.drift_nonrpm()
         self.drift_users()
-        self.drift_secrets()   # Must run after users (needs user homes for kitchen-sink secrets)
+        # WARNING: drift_secrets() must remain after drift_users().
+        # Kitchen-sink secrets write to /home/appuser/ which only exists
+        # once drift_users() has run useradd.  Reordering breaks silently.
+        self.drift_secrets()
 
         if not self.dry_run:
             self.stamp.finish()
