@@ -231,6 +231,54 @@ class TestHelpersAndDryRun(DriftifyTestCase):
             d._set_or_append_directive(str(p), "NewKey", "NewKey value")
             self.assertIn("NewKey value", p.read_text())
 
+    def test_apply_directives_batches_into_single_write(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = self._build_non_dry_with_temp_stamp(td)
+            p = Path(td) / "httpd.conf"
+            p.write_text("Listen 80\n#ServerName example.com\nMaxRequestWorkers 150\n")
+
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._apply_directives(str(p), {
+                    "Listen":            "Listen 8080",
+                    "ServerName":        "ServerName driftify.local",
+                    "MaxRequestWorkers": "MaxRequestWorkers 256",
+                })
+            self._suppress.__enter__()
+
+            content = p.read_text()
+            self.assertIn("Listen 8080", content)
+            self.assertIn("ServerName driftify.local", content)
+            self.assertIn("MaxRequestWorkers 256", content)
+            self.assertNotIn("Listen 80\n", content)
+            # Only one "Wrote" line — single write for all three directives
+            self.assertEqual(buf.getvalue().count("Wrote"), 1)
+
+    def test_ensure_dir_logs_creation(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = self._build_non_dry_with_temp_stamp(td)
+            new_dir = Path(td) / "myapp"
+
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._ensure_dir(new_dir)
+            self._suppress.__enter__()
+
+            self.assertTrue(new_dir.exists())
+            self.assertIn(str(new_dir), buf.getvalue())
+
+    def test_ensure_dir_silent_when_already_exists(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = self._build_non_dry_with_temp_stamp(td)
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._ensure_dir(Path(td))  # already exists
+            self._suppress.__enter__()
+            self.assertEqual(buf.getvalue(), "")
+
 
 class TestSummary(DriftifyTestCase):
     def test_summary_services_uses_stamp_data(self):

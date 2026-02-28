@@ -338,6 +338,7 @@ class Driftify:
             return
         path.mkdir(parents=True, exist_ok=True)
         self.stamp.record("dirs_created", str(path))
+        _info(f"Created dir {path}")
 
     def _write_managed_text(self, path_str: str, content: str, mode: int = 0o644) -> None:
         """Write file with stamp tracking for created/modified files."""
@@ -369,25 +370,38 @@ class Driftify:
         _info(f"Wrote {path}")
 
     def _set_or_append_directive(self, path_str: str, key: str, line: str) -> None:
-        """Set a config directive by key or append when missing."""
+        """Set a config directive by key or append when missing (single directive)."""
+        self._apply_directives(path_str, {key: line})
+
+    def _apply_directives(self, path_str: str,
+                          directives: dict) -> None:
+        """Apply multiple key→line directive replacements to a file in one pass.
+
+        Each key is matched against commented or uncommented lines; the first
+        match is replaced with the supplied line.  Unmatched keys are appended.
+        """
         path = Path(path_str)
         if not path.exists():
-            _warn(f"{path} not found — skipping directive '{key}'")
+            for key in directives:
+                _warn(f"{path} not found — skipping directive '{key}'")
             return
 
         with open(path) as fh:
             text = fh.read()
         lines = text.splitlines()
-        found = False
-        key_re = re.compile(r"^\s*(#\s*)?" + re.escape(key) + r"(\s|=)")
+        remaining = dict(directives)
 
         for idx, existing in enumerate(lines):
-            if key_re.match(existing):
-                lines[idx] = line
-                found = True
-                break
+            for key, line in list(remaining.items()):
+                key_re = re.compile(
+                    r"^\s*(#\s*)?" + re.escape(key) + r"(\s|=)"
+                )
+                if key_re.match(existing):
+                    lines[idx] = line
+                    del remaining[key]
+                    break
 
-        if not found:
+        for line in remaining.values():
             lines.append(line)
 
         out = "\n".join(lines) + "\n"
@@ -621,12 +635,16 @@ class Driftify:
 
         self._next_step("config")
 
-        # Minimal: modify RPM-owned configs
-        self._set_or_append_directive("/etc/httpd/conf/httpd.conf", "Listen", "Listen 8080")
-        self._set_or_append_directive("/etc/httpd/conf/httpd.conf", "ServerName", "ServerName driftify.local")
-        self._set_or_append_directive("/etc/httpd/conf/httpd.conf", "MaxRequestWorkers", "MaxRequestWorkers 256")
+        # Minimal: modify RPM-owned configs (batch directives per file)
+        self._apply_directives("/etc/httpd/conf/httpd.conf", {
+            "Listen":            "Listen 8080",
+            "ServerName":        "ServerName driftify.local",
+            "MaxRequestWorkers": "MaxRequestWorkers 256",
+        })
 
-        self._set_or_append_directive("/etc/nginx/nginx.conf", "worker_processes", "worker_processes 2;")
+        self._apply_directives("/etc/nginx/nginx.conf", {
+            "worker_processes": "worker_processes 2;",
+        })
         self._append_managed_block(
             "/etc/nginx/nginx.conf",
             "nginx-server-block",
@@ -662,8 +680,10 @@ log_level = info
         )
 
         if self.needs_profile("standard"):
-            self._set_or_append_directive("/etc/ssh/sshd_config", "PermitRootLogin", "PermitRootLogin no")
-            self._set_or_append_directive("/etc/ssh/sshd_config", "Port", "Port 2222")
+            self._apply_directives("/etc/ssh/sshd_config", {
+                "PermitRootLogin": "PermitRootLogin no",
+                "Port":            "Port 2222",
+            })
             self._append_managed_block(
                 "/etc/chrony.conf",
                 "chrony-servers",
