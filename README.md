@@ -84,23 +84,6 @@ Each section maps to a yoinkc inspector:
 - 🎨 **Human-readable output** — colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
 - ✅ **Interactive confirmation** — prints a plain-English summary of what will happen and asks `[y/N]` before touching anything. Use `-y` / `--yes` to bypass. Skipped automatically in `--dry-run` mode.
 
-## Implementation status
-
-Sections are being implemented iteratively:
-
-- [x] 📦 RPM / Packages
-- [x] ⚙️ Services
-- [x] 🔧 Config Files
-- [x] 🌐 Network
-- [x] 💾 Storage
-- [x] ⏰ Scheduled Tasks
-- [x] 🦭 Containers
-- [x] 🧩 Non-RPM Software
-- [x] 🐧 Kernel / Boot
-- [x] 🛡️ SELinux / Security
-- [x] 👥 Users / Groups
-- [x] 🔑 Secrets
-
 ## Running tests
 
 ```bash
