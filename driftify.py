@@ -40,7 +40,7 @@ BASE_PACKAGES = {
     ],
     "standard": [
         "rsync", "lsof", "strace", "tcpdump", "nmap-ncat",
-        "bash-completion", "man-pages", "info", "tree", "unzip",
+        "bash-completion", "man-pages", "info", "tree", "unzip", "at",
     ],
     "kitchen-sink": [
         "gcc", "make", "kernel-devel", "gdb", "valgrind",
@@ -242,6 +242,7 @@ class StampFile:
             "groups_created": [],
             "firewall_services": [],
             "firewall_ports": [],
+            "at_jobs": [],
             "selinux_booleans": [],
             "selinux_modules": [],
         }
@@ -267,7 +268,10 @@ class StampFile:
 
 class Driftify:
 
-    _IMPLEMENTED = {"rpm", "services", "config", "network", "storage", "secrets"}
+    _IMPLEMENTED = {
+        "rpm", "services", "config", "network", "storage",
+        "scheduled", "users", "secrets",
+    }
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
                  undo: bool = False, yes: bool = False):
@@ -490,6 +494,20 @@ class Driftify:
                 sto += "; add NFS/CIFS entries to /etc/fstab"
             lines.append(sto)
 
+        if "scheduled" in active:
+            sch = "Create cron jobs (/etc/cron.d, /etc/cron.daily)"
+            if self.needs_profile("standard"):
+                sch += ", systemd timer pair, at job, per-user crontab"
+            lines.append(sch)
+
+        if "users" in active:
+            usr = "Create appuser (UID 1001) + appgroup (GID 1001)"
+            if self.needs_profile("standard"):
+                usr += ", dbuser (UID 1002), sudoers rule, SSH key"
+            if self.needs_profile("kitchen-sink"):
+                usr += ", subuid/subgid maps"
+            lines.append(usr)
+
         if "secrets" in active:
             sec = "Plant fake credentials in /etc/myapp/ (AWS, PEM"
             if self.needs_profile("standard"):
@@ -575,13 +593,13 @@ class Driftify:
         self.drift_config()
         self.drift_network()
         self.drift_storage()
+        self.drift_scheduled()
         # Future sections — will be added iteratively:
-        # self.drift_scheduled()
         # self.drift_containers()
         # self.drift_nonrpm()
         # self.drift_kernel()
         # self.drift_selinux()
-        # self.drift_users()
+        self.drift_users()
         self.drift_secrets()   # Must run after users (needs user homes for kitchen-sink secrets)
 
         if not self.dry_run:
@@ -606,6 +624,16 @@ class Driftify:
         self._confirm(undo_mode=True)
 
         self._undo_filesystem()
+
+        # Reload systemd if any created unit files were removed
+        unit_files = [f for f in self.stamp.data.get("files_created", [])
+                      if "/systemd/system/" in f]
+        if unit_files:
+            _info(f"{_I.COGS}  Reloading systemd after unit file removal")
+            self.run_cmd(["systemctl", "daemon-reload"], check=False)
+
+        self._undo_scheduled()
+        self._undo_users()
         self._undo_network()
         self._undo_services()
         self._undo_rpm()
@@ -1048,6 +1076,233 @@ domain=INTERNAL
         if not self.dry_run:
             self.stamp.save()
 
+    # ── Scheduled Tasks ────────────────────────────────────────────────────
+
+    def drift_scheduled(self) -> None:
+        if "scheduled" in self.skip:
+            _skip("Skipping Scheduled section (--skip-scheduled)")
+            return
+
+        self._next_step("scheduled")
+
+        # Minimal: cron job in /etc/cron.d
+        self._write_managed_text(
+            "/etc/cron.d/backup-daily",
+            "# Daily backup — driftify synthetic fixture\n"
+            "# yoinkc should convert this to a systemd timer\n"
+            "0 2 * * * root /usr/local/bin/backup.sh"
+            " >> /var/log/myapp/backup.log 2>&1\n",
+        )
+
+        # Minimal: cron daily drop-in script
+        self._write_managed_text(
+            "/etc/cron.daily/cleanup.sh",
+            "#!/bin/sh\n"
+            "# Cleanup script — driftify synthetic fixture\n"
+            "find /tmp -name 'myapp-*' -mtime +7 -delete\n",
+            mode=0o755,
+        )
+
+        if self.needs_profile("standard"):
+            # Per-user crontab written directly to spool dir
+            # appuser is created later in drift_users; crond picks it up then
+            self._write_managed_text(
+                "/var/spool/cron/appuser",
+                "# appuser crontab — driftify synthetic fixture\n"
+                "*/15 * * * * /opt/myapp/scripts/health-check.sh"
+                " >> /var/log/myapp/health.log 2>&1\n",
+                mode=0o600,
+            )
+
+            # Systemd timer + service pair
+            self._write_managed_text(
+                "/etc/systemd/system/myapp-report.service",
+                "[Unit]\n"
+                "Description=MyApp Daily Report\n"
+                "After=network.target\n\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "User=root\n"
+                "ExecStart=/usr/local/bin/generate-report.sh\n"
+                "StandardOutput=journal\n",
+            )
+            self._write_managed_text(
+                "/etc/systemd/system/myapp-report.timer",
+                "[Unit]\n"
+                "Description=MyApp Daily Report Timer\n\n"
+                "[Timer]\n"
+                "OnCalendar=daily\n"
+                "Persistent=true\n\n"
+                "[Install]\n"
+                "WantedBy=timers.target\n",
+            )
+            self.run_cmd(["systemctl", "daemon-reload"], check=False)
+            _info(f"{_I.TOGGLE}  Enabling myapp-report.timer")
+            self.run_cmd(["systemctl", "enable", "myapp-report.timer"],
+                         check=False)
+            if not self.dry_run:
+                self.stamp.record("services_enabled", "myapp-report.timer")
+
+            # Queue an at job
+            _info(f"{_I.CLOCK}  Starting atd and queuing at job")
+            self.run_cmd(["systemctl", "start", "atd"], check=False)
+            self._queue_at_job()
+
+        if self.needs_profile("kitchen-sink"):
+            # Cron job with MAILTO and env vars — exercises edge-case parsing
+            self._write_managed_text(
+                "/etc/cron.d/complex-job",
+                "# Complex cron with env deps — driftify kitchen-sink fixture\n"
+                "MAILTO=ops@example.com\n"
+                "APP_ENV=production\n"
+                "30 6 * * 1-5 appuser /opt/myapp/scripts/weekday-report.sh\n",
+            )
+
+        if not self.dry_run:
+            self.stamp.save()
+
+    def _queue_at_job(self) -> None:
+        """Queue an at job and store its ID in the stamp for undo."""
+        if self.dry_run:
+            _dry("echo 'touch /tmp/driftify-at-probe' | at now + 1 hour")
+            return
+        r = subprocess.run(
+            ["at", "now", "+", "1", "hour"],
+            input="touch /tmp/driftify-at-probe\n",
+            capture_output=True, text=True, check=False,
+        )
+        if r.returncode != 0:
+            _warn(f"at job failed: {r.stderr.strip()}")
+            return
+        match = re.search(r"job\s+(\d+)", r.stderr)
+        if match:
+            job_id = int(match.group(1))
+            self.stamp.record("at_jobs", job_id)
+            _info(f"{_I.CLOCK}  Queued at job {job_id}")
+        else:
+            _warn(f"Could not parse at job ID from: {r.stderr.strip()}")
+
+    # ── Users / Groups ─────────────────────────────────────────────────────
+
+    def drift_users(self) -> None:
+        if "users" in self.skip:
+            _skip("Skipping Users section (--skip-users)")
+            return
+
+        self._next_step("users")
+
+        # Minimal: create appgroup then appuser with that primary group
+        _info(f"{_I.USERS}  Creating group appgroup (GID 1001)")
+        self.run_cmd(["groupadd", "-g", "1001", "appgroup"], check=False)
+        if not self.dry_run:
+            r = subprocess.run(["getent", "group", "appgroup"],
+                               capture_output=True)
+            if r.returncode == 0:
+                self.stamp.record("groups_created", "appgroup")
+
+        _info(f"{_I.USERS}  Creating user appuser (UID 1001, primary: appgroup)")
+        self.run_cmd(
+            ["useradd", "-u", "1001", "-g", "appgroup", "-m",
+             "-c", "App User", "appuser"],
+            check=False,
+        )
+        if not self.dry_run:
+            r = subprocess.run(["id", "appuser"], capture_output=True)
+            if r.returncode == 0:
+                self.stamp.record("users_created", "appuser")
+
+        if self.needs_profile("standard"):
+            _info(f"{_I.USERS}  Creating user dbuser (UID 1002, nologin)")
+            self.run_cmd(
+                ["useradd", "-u", "1002", "-s", "/sbin/nologin", "-M",
+                 "-c", "DB Service Account", "dbuser"],
+                check=False,
+            )
+            if not self.dry_run:
+                r = subprocess.run(["id", "dbuser"], capture_output=True)
+                if r.returncode == 0:
+                    self.stamp.record("users_created", "dbuser")
+
+            # Sudoers rule
+            self._write_managed_text(
+                "/etc/sudoers.d/appusers",
+                "# sudoers rules — driftify synthetic fixture\n"
+                "appuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart myapp\n"
+                "appuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl status myapp\n",
+                mode=0o440,
+            )
+
+            # SSH authorized_keys for appuser
+            ssh_dir = Path("/home/appuser/.ssh")
+            self._ensure_dir(ssh_dir)
+            if not self.dry_run:
+                self.run_cmd(["chown", "appuser:appgroup", str(ssh_dir)],
+                             check=False)
+                self.run_cmd(["chmod", "0700", str(ssh_dir)], check=False)
+            self._write_managed_text(
+                "/home/appuser/.ssh/authorized_keys",
+                "# Driftify synthetic SSH key — NOT a real key\n"
+                "ssh-rsa AAAAB3NzaC1yc2EDRIFTIFYFAKEKEY0000EXAMPLEONLY"
+                "0000000000 appuser@driftify-demo\n",
+                mode=0o600,
+            )
+            if not self.dry_run:
+                self.run_cmd(
+                    ["chown", "appuser:appgroup",
+                     "/home/appuser/.ssh/authorized_keys"],
+                    check=False,
+                )
+
+        if self.needs_profile("kitchen-sink"):
+            # Rootless container user mappings
+            self._append_managed_block(
+                "/etc/subuid",
+                "appuser-subuid",
+                "appuser:100000:65536",
+                create_if_missing=False,
+            )
+            self._append_managed_block(
+                "/etc/subgid",
+                "appuser-subgid",
+                "appuser:100000:65536",
+                create_if_missing=False,
+            )
+
+        if not self.dry_run:
+            self.stamp.save()
+
+    # ── Undo: Scheduled Tasks ──────────────────────────────────────────────
+
+    def _undo_scheduled(self) -> None:
+        at_jobs = self.stamp.data.get("at_jobs", [])
+        if not at_jobs:
+            return
+        _banner(f"{_I.UNDO}  Undo: Scheduled Tasks (at jobs)")
+        for job_id in at_jobs:
+            _info(f"{_I.CLOCK}  Removing at job {job_id}")
+            self.run_cmd(["atrm", str(job_id)], check=False)
+
+    # ── Undo: Users / Groups ───────────────────────────────────────────────
+
+    def _undo_users(self) -> None:
+        d = self.stamp.data
+        users = d.get("users_created", [])
+        groups = d.get("groups_created", [])
+
+        if not (users or groups):
+            return
+
+        _banner(f"{_I.UNDO}  Undo: Users / Groups")
+
+        # Delete users first (primary group can't be deleted while user exists)
+        for user in reversed(users):
+            _info(f"{_I.USERS}  Deleting user {user} (and home dir)")
+            self.run_cmd(["userdel", "-r", user], check=False)
+
+        for group in groups:
+            _info(f"{_I.USERS}  Deleting group {group}")
+            self.run_cmd(["groupdel", group], check=False)
+
     # ── Undo: Services ────────────────────────────────────────────────────
 
     def _undo_services(self) -> None:
@@ -1240,6 +1495,36 @@ domain=INTERNAL
         sto = "skipped" if "storage" in self.skip else "fstab + /var storage drift applied"
         _info(f"{SECTION_ICONS['storage']}  Storage:    {sto}")
 
+        # Scheduled stats
+        if "scheduled" not in self.skip:
+            sch_parts = ["2 cron files"]
+            if self.needs_profile("standard"):
+                sch_parts += ["1 timer", "1 at job", "1 per-user crontab"]
+            if self.needs_profile("kitchen-sink"):
+                sch_parts.append("1 complex cron")
+            sch_str = ", ".join(sch_parts)
+        else:
+            sch_str = "skipped"
+        _info(f"{SECTION_ICONS['scheduled']}  Scheduled:  {sch_str}")
+
+        # Users stats — use stamp data when available
+        if "users" not in self.skip:
+            if d:
+                usr_n = len(d.get("users_created", []))
+                grp_n = len(d.get("groups_created", []))
+            else:
+                usr_n = 1 + (1 if self.needs_profile("standard") else 0)
+                grp_n = 1
+            usr_parts = []
+            if usr_n: usr_parts.append(f"{usr_n} user(s)")
+            if grp_n: usr_parts.append(f"{grp_n} group(s)")
+            if self.needs_profile("standard"):
+                usr_parts += ["sudoers rule", "SSH key"]
+            usr_str = ", ".join(usr_parts) if usr_parts else "none"
+        else:
+            usr_str = "skipped"
+        _info(f"{SECTION_ICONS['users']}  Users:      {usr_str}")
+
         # Secrets stats
         sec = "skipped" if "secrets" in self.skip else "fake secrets planted"
         _info(f"{SECTION_ICONS['secrets']}  Secrets:    {sec}")
@@ -1296,7 +1581,7 @@ examples:
     )
     p.add_argument(
         "-y", "--yes", action="store_true",
-        help="skip interactive confirmation prompt (for scripted/CI use)",
+        help="skip interactive confirmation prompt",
     )
     return p
 

@@ -44,15 +44,16 @@ class TestProfileAndSkipLogic(DriftifyTestCase):
 
     def test_total_steps_respect_skip_flags(self):
         d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        self.assertEqual(d._total, 6)
+        self.assertEqual(d._total, 8)  # rpm, services, config, network, storage, scheduled, users, secrets
 
         d = driftify.Driftify("standard", dry_run=True, skip_sections=["network", "storage"])
-        self.assertEqual(d._total, 4)
+        self.assertEqual(d._total, 6)
 
         d = driftify.Driftify(
             "standard",
             dry_run=True,
-            skip_sections=["rpm", "services", "config", "network", "storage", "secrets"],
+            skip_sections=["rpm", "services", "config", "network",
+                           "storage", "scheduled", "users", "secrets"],
         )
         self.assertEqual(d._total, 0)
 
@@ -413,6 +414,127 @@ class TestSummary(DriftifyTestCase):
             d._print_summary()
         self._suppress.__enter__()
         self.assertIn("orphaned config", buf.getvalue())
+
+
+class TestScheduled(DriftifyTestCase):
+    def test_scheduled_dry_run_creates_cron_files(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_scheduled()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/etc/cron.d/backup-daily", output)
+        self.assertIn("/etc/cron.daily/cleanup.sh", output)
+
+    def test_scheduled_standard_dry_run_creates_timer_and_at(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_scheduled()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("myapp-report.timer", output)
+        self.assertIn("myapp-report.service", output)
+        self.assertIn("/var/spool/cron/appuser", output)
+        self.assertIn("at now + 1 hour", output)
+
+    def test_scheduled_kitchen_sink_has_complex_cron(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_scheduled()
+        self._suppress.__enter__()
+        self.assertIn("/etc/cron.d/complex-job", buf.getvalue())
+
+    def test_stamp_has_at_jobs_field(self):
+        with tempfile.TemporaryDirectory() as td:
+            sf = driftify.StampFile(Path(td) / "stamp.json")
+            sf.start("standard", "centos", 9)
+            self.assertIn("at_jobs", sf.data)
+            self.assertEqual(sf.data["at_jobs"], [])
+
+    def test_undo_scheduled_removes_at_jobs(self):
+        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {"at_jobs": [3, 7]}
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_scheduled()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("atrm 3", output)
+        self.assertIn("atrm 7", output)
+
+    def test_undo_scheduled_noop_when_no_jobs(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {"at_jobs": []}
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_scheduled()
+        self._suppress.__enter__()
+        self.assertEqual(buf.getvalue(), "")
+
+
+class TestUsers(DriftifyTestCase):
+    def test_users_dry_run_creates_user_and_group(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_users()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("appuser", output)
+        self.assertIn("appgroup", output)
+
+    def test_users_standard_dry_run_creates_dbuser_and_sudoers(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_users()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("dbuser", output)
+        self.assertIn("/etc/sudoers.d/appusers", output)
+        self.assertIn("/home/appuser/.ssh/authorized_keys", output)
+
+    def test_undo_users_disables_users_then_groups(self):
+        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {
+            "users_created": ["appuser", "dbuser"],
+            "groups_created": ["appgroup"],
+        }
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_users()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("userdel", output)
+        self.assertIn("appuser", output)
+        self.assertIn("dbuser", output)
+        self.assertIn("groupdel", output)
+        self.assertIn("appgroup", output)
+        # Users must come before groups in output
+        self.assertLess(output.index("userdel"), output.index("groupdel"))
+
+    def test_undo_users_noop_when_empty(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d.stamp.data = {"users_created": [], "groups_created": []}
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._undo_users()
+        self._suppress.__enter__()
+        self.assertEqual(buf.getvalue(), "")
 
 
 class TestUndoFilesystem(DriftifyTestCase):

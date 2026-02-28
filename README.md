@@ -18,7 +18,8 @@ No dependencies beyond Python 3 (ships on every RHEL/CentOS Stream minimal insta
 ## Usage
 
 ```
-sudo ./driftify.py                          # standard profile
+sudo ./driftify.py                          # standard profile (interactive confirm)
+sudo ./driftify.py -y                       # skip confirmation prompt
 sudo ./driftify.py --profile minimal        # CI-friendly, fast
 sudo ./driftify.py --profile kitchen-sink   # everything
 sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
@@ -34,6 +35,7 @@ sudo ./driftify.py --dry-run                # preview without changes
 | `--skip-SECTION` | Skip a section (e.g. `--skip-rpm`, `--skip-services`, `--skip-nonrpm`) |
 | `--undo` | Reverse all modifications from the previous run (requires stamp file) |
 | `--dry-run` | Print commands without executing them |
+| `-y`, `--yes` | Skip interactive confirmation prompt |
 | `--help` | Show help |
 
 ### Sections
@@ -80,6 +82,7 @@ Each section maps to a yoinkc inspector:
 - ♻️ **Idempotent** — safe to run twice without breaking the system.
 - 🔑 **Fake secrets** — plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
 - 🎨 **Human-readable output** — colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
+- ✅ **Interactive confirmation** — prints a plain-English summary of what will happen and asks `[y/N]` before touching anything. Use `-y` / `--yes` to bypass. Skipped automatically in `--dry-run` mode.
 
 ## Implementation status
 
@@ -90,12 +93,12 @@ Sections are being implemented iteratively:
 - [x] 🔧 Config Files
 - [x] 🌐 Network
 - [x] 💾 Storage
-- [ ] ⏰ Scheduled Tasks
+- [x] ⏰ Scheduled Tasks
 - [ ] 🦭 Containers
 - [ ] 🧩 Non-RPM Software
 - [ ] 🐧 Kernel / Boot
 - [ ] 🛡️ SELinux / Security
-- [ ] 👥 Users / Groups
+- [x] 👥 Users / Groups
 - [x] 🔑 Secrets
 
 ## Running tests
