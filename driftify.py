@@ -297,10 +297,13 @@ class Driftify:
             _dry(pretty)
             return None
         _info(f"Running: {pretty}")
-        return subprocess.run(
+        result = subprocess.run(
             cmd, check=check,
             capture_output=capture, text=capture,
         )
+        if not check and result.returncode != 0:
+            _warn(f"  ↳ exited {result.returncode}: {pretty}")
+        return result
 
     def _dnf_last_tid(self):
         """Return the most recent dnf transaction ID, or None."""
@@ -448,7 +451,6 @@ class Driftify:
         self.drift_config()
         self.drift_network()
         self.drift_storage()
-        self.drift_secrets()
         # Future sections — will be added iteratively:
         # self.drift_scheduled()
         # self.drift_containers()
@@ -456,6 +458,7 @@ class Driftify:
         # self.drift_kernel()
         # self.drift_selinux()
         # self.drift_users()
+        self.drift_secrets()   # Must run after users (needs user homes for kitchen-sink secrets)
 
         if not self.dry_run:
             self.stamp.finish()
@@ -536,11 +539,21 @@ class Driftify:
                     check=False,
                 )
 
-        # Ghost package: install then immediately remove (standard+)
+        # Ghost package: install, drop orphaned config, remove (standard+)
+        # This creates a dnf history entry AND an unowned /etc config file,
+        # both of which yoinkc's RPM inspector is expected to detect.
         if self.needs_profile("standard"):
-            _info(f"{_I.RECYCLE}  Ghost package: install + remove "
-                  f"'{GHOST_PACKAGE}'")
+            _info(f"{_I.RECYCLE}  Ghost package: install + orphaned config "
+                  f"+ remove '{GHOST_PACKAGE}'")
             self.run_cmd(["dnf", "install", "-y", GHOST_PACKAGE], check=False)
+            self._write_managed_text(
+                "/etc/words.conf",
+                "# Simulated orphaned config — driftify synthetic fixture\n"
+                "# This file is left behind after 'words' is removed,\n"
+                "# exercising yoinkc unowned-file and dnf-ghost detection.\n"
+                "dictionary = /usr/share/dict/words\n"
+                "max_suggestions = 10\n",
+            )
             self.run_cmd(["dnf", "remove", "-y", GHOST_PACKAGE], check=False)
             if not self.dry_run:
                 self.stamp.record("ghost_package", GHOST_PACKAGE)
@@ -575,8 +588,13 @@ class Driftify:
 
         # Mask bluetooth if it exists (standard+)
         if self.needs_profile("standard"):
-            bt_exists = True
-            if not self.dry_run:
+            _BT_UNIT_PATHS = [
+                Path("/usr/lib/systemd/system/bluetooth.service"),
+                Path("/lib/systemd/system/bluetooth.service"),
+            ]
+            if self.dry_run:
+                bt_exists = any(p.exists() for p in _BT_UNIT_PATHS)
+            else:
                 r = subprocess.run(
                     ["systemctl", "cat", "bluetooth"],
                     capture_output=True, text=True,
@@ -1020,6 +1038,8 @@ domain=INTERNAL
         _banner(f"{_I.CHECK}  driftify complete "
                 f"({self.profile} profile, {m}m {s:02d}s)")
 
+        d = self.stamp.data  # {} when dry_run (stamp never started)
+
         # RPM stats
         pkg_count = sum(
             len(BASE_PACKAGES.get(lvl, []))
@@ -1029,36 +1049,51 @@ domain=INTERNAL
             len(EPEL_PACKAGES.get(lvl, []))
             for lvl in PROFILES if self.needs_profile(lvl)
         )
-        rpm_parts = []
         if "rpm" not in self.skip:
-            rpm_parts.append(f"{pkg_count + epel_count} packages requested")
-            rpm_parts.append("1 repo added")
+            rpm_parts = [f"{pkg_count + epel_count} packages requested", "1 repo added"]
             if self.needs_profile("standard"):
-                rpm_parts.append("1 ghost package")
+                rpm_parts += ["1 ghost package", "1 orphaned config"]
+            rpm_str = ", ".join(rpm_parts)
+        else:
+            rpm_str = "skipped"
+        _info(f"{SECTION_ICONS['rpm']}  RPM:        {rpm_str}")
 
-        icon = SECTION_ICONS["rpm"]
-        _info(f"{icon}  RPM:        "
-              f"{', '.join(rpm_parts) if rpm_parts else 'skipped'}")
-
-        # Service stats
-        svc_parts = []
+        # Service stats — use real stamp counts when available
         if "services" not in self.skip:
-            svc_parts.append("2 enabled")
-            svc_parts.append("1 disabled")
-            if self.needs_profile("standard"):
-                svc_parts.append("1 masked")
-
-        icon = SECTION_ICONS["services"]
-        _info(f"{icon}  Services:   "
-              f"{', '.join(svc_parts) if svc_parts else 'skipped'}")
+            if d:
+                en  = len(d.get("services_enabled",  []))
+                dis = len(d.get("services_disabled", []))
+                mas = len(d.get("services_masked",   []))
+            else:
+                en, dis = 2, 1
+                mas = 1 if self.needs_profile("standard") else 0
+            parts = []
+            if en:  parts.append(f"{en} enabled")
+            if dis: parts.append(f"{dis} disabled")
+            if mas: parts.append(f"{mas} masked")
+            svc_str = ", ".join(parts) if parts else "none"
+        else:
+            svc_str = "skipped"
+        _info(f"{SECTION_ICONS['services']}  Services:   {svc_str}")
 
         # Config stats
         cfg = "skipped" if "config" in self.skip else "RPM + unowned config drift applied"
         _info(f"{SECTION_ICONS['config']}  Config:     {cfg}")
 
-        # Network stats
-        net = "skipped" if "network" in self.skip else "firewall/hosts/network files drift applied"
-        _info(f"{SECTION_ICONS['network']}  Network:    {net}")
+        # Network stats — use real firewall counts when available
+        if "network" not in self.skip:
+            if d:
+                fw_n = (len(d.get("firewall_services", [])) +
+                        len(d.get("firewall_ports",    [])))
+                net_parts = [f"{fw_n} firewall rules", "hosts entries"]
+            else:
+                net_parts = ["3 firewall rules", "hosts entries"]
+            if self.needs_profile("standard"):
+                net_parts += ["zone", "NM profile", "proxy"]
+            net_str = ", ".join(net_parts)
+        else:
+            net_str = "skipped"
+        _info(f"{SECTION_ICONS['network']}  Network:    {net_str}")
 
         # Storage stats
         sto = "skipped" if "storage" in self.skip else "fstab + /var storage drift applied"

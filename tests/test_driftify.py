@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -142,6 +143,30 @@ class TestHelpersAndDryRun(DriftifyTestCase):
         out = d.run_cmd(["echo", "hello"])
         self.assertIsNone(out)
 
+    def test_run_cmd_warns_on_nonzero_exit(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 127
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch("subprocess.run", return_value=mock_result):
+                d.run_cmd(["no-such-cmd"], check=False)
+        self._suppress.__enter__()
+        self.assertIn("exited 127", buf.getvalue())
+
+    def test_run_cmd_no_warning_on_success(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch("subprocess.run", return_value=mock_result):
+                d.run_cmd(["true"], check=False)
+        self._suppress.__enter__()
+        self.assertNotIn("exited", buf.getvalue())
+
     def test_dry_run_output_mentions_new_sections(self):
         d = driftify.Driftify("minimal", dry_run=True, skip_sections=["rpm", "services"])
         self._suppress.__exit__(None, None, None)
@@ -157,6 +182,42 @@ class TestHelpersAndDryRun(DriftifyTestCase):
         self.assertIn("/etc/myapp/app.conf", output)
         self.assertIn("/etc/hosts", output)
 
+    def test_ghost_package_dry_run_shows_orphaned_config(self):
+        d = driftify.Driftify("standard", dry_run=True,
+                              skip_sections=["services", "config", "network",
+                                             "storage", "secrets"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.run()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("/etc/words.conf", output)
+        self.assertIn(driftify.GHOST_PACKAGE, output)
+
+    def test_bluetooth_dry_run_respects_unit_absence(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=["rpm"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists",
+                                            return_value=False):
+                d.drift_services()
+        self._suppress.__enter__()
+        # When unit absent, mask command should NOT be in dry-run output
+        self.assertNotIn("systemctl mask bluetooth", buf.getvalue())
+
+    def test_bluetooth_dry_run_shows_mask_when_unit_present(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=["rpm"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists",
+                                            return_value=True):
+                d.drift_services()
+        self._suppress.__enter__()
+        self.assertIn("systemctl mask bluetooth", buf.getvalue())
+
     def test_set_or_append_directive(self):
         with tempfile.TemporaryDirectory() as td:
             d = self._build_non_dry_with_temp_stamp(td)
@@ -169,6 +230,62 @@ class TestHelpersAndDryRun(DriftifyTestCase):
 
             d._set_or_append_directive(str(p), "NewKey", "NewKey value")
             self.assertIn("NewKey value", p.read_text())
+
+
+class TestSummary(DriftifyTestCase):
+    def test_summary_services_uses_stamp_data(self):
+        """Summary shows actual service counts from stamp, not hardcoded estimates."""
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            # Simulate only 1 service enabled (not the usual 2)
+            d.stamp.record("services_enabled", "httpd")
+            d.stamp.record("services_disabled", "kdump")
+            d.stamp.record("services_masked", "bluetooth")
+            d.stamp.save()
+            d._t0 = __import__("time").monotonic()
+
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._print_summary()
+            self._suppress.__enter__()
+            output = buf.getvalue()
+            self.assertIn("1 enabled", output)
+            self.assertIn("1 disabled", output)
+            self.assertIn("1 masked", output)
+
+    def test_summary_network_uses_stamp_data(self):
+        """Summary shows actual firewall rule counts from stamp."""
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            d.stamp.record("firewall_services", "http")
+            d.stamp.record("firewall_ports", "8080/tcp")
+            d.stamp.save()
+            d._t0 = __import__("time").monotonic()
+
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._print_summary()
+            self._suppress.__enter__()
+            output = buf.getvalue()
+            self.assertIn("2 firewall rules", output)
+
+    def test_summary_rpm_mentions_orphaned_config(self):
+        """RPM summary line mentions orphaned config for standard+."""
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d._t0 = __import__("time").monotonic()
+
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._print_summary()
+        self._suppress.__enter__()
+        self.assertIn("orphaned config", buf.getvalue())
 
 
 class TestUndoFilesystem(DriftifyTestCase):
