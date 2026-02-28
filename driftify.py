@@ -37,6 +37,7 @@ BASE_PACKAGES = {
     "minimal": [
         "httpd", "nginx", "vim-enhanced", "tmux", "jq",
         "python3-pip", "git", "wget", "curl", "bind-utils",
+        "podman",
     ],
     "standard": [
         "rsync", "lsof", "strace", "tcpdump", "nmap-ncat",
