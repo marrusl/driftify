@@ -8,6 +8,7 @@ modifications so that every yoinkc inspector has something to detect.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -237,6 +238,7 @@ class StampFile:
             "services_masked": [],
             "files_created": [],
             "dirs_created": [],
+            "file_backups": {},
             "users_created": [],
             "groups_created": [],
             "selinux_booleans": [],
@@ -262,7 +264,7 @@ class StampFile:
 
 class Driftify:
 
-    _IMPLEMENTED = {"rpm", "services"}
+    _IMPLEMENTED = {"rpm", "services", "config", "network", "storage", "secrets"}
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
                  undo: bool = False):
@@ -309,6 +311,111 @@ class Driftify:
                 return int(parts[0])
         return None
 
+    def _backup_file_once(self, path: Path) -> None:
+        """Save original file content to stamp once."""
+        if self.dry_run or not path.exists():
+            return
+        backups = self.stamp.data.setdefault("file_backups", {})
+        key = str(path)
+        if key in backups:
+            return
+        with open(path) as fh:
+            backups[key] = fh.read()
+        self.stamp.save()
+
+    def _ensure_dir(self, path: Path) -> None:
+        """Create directory (and track it) when needed."""
+        if path.exists():
+            return
+        if self.dry_run:
+            _dry(f"mkdir -p {path}")
+            return
+        path.mkdir(parents=True, exist_ok=True)
+        self.stamp.record("dirs_created", str(path))
+
+    def _write_managed_text(self, path_str: str, content: str, mode: int = 0o644) -> None:
+        """Write file with stamp tracking for created/modified files."""
+        path = Path(path_str)
+        exists = path.exists()
+
+        if exists:
+            with open(path) as fh:
+                old = fh.read()
+            if old == content:
+                _info(f"No change needed: {path}")
+                return
+        else:
+            old = None
+
+        if self.dry_run:
+            action = "update" if exists else "create"
+            _dry(f"{action} file {path}")
+            return
+
+        self._ensure_dir(path.parent)
+        if exists:
+            self._backup_file_once(path)
+        with open(path, "w") as fh:
+            fh.write(content)
+        os.chmod(path, mode)
+        if not exists:
+            self.stamp.record("files_created", str(path))
+        _info(f"Wrote {path}")
+
+    def _set_or_append_directive(self, path_str: str, key: str, line: str) -> None:
+        """Set a config directive by key or append when missing."""
+        path = Path(path_str)
+        if not path.exists():
+            _warn(f"{path} not found — skipping directive '{key}'")
+            return
+
+        with open(path) as fh:
+            text = fh.read()
+        lines = text.splitlines()
+        found = False
+        key_re = re.compile(r"^\s*(#\s*)?" + re.escape(key) + r"(\s|=)")
+
+        for idx, existing in enumerate(lines):
+            if key_re.match(existing):
+                lines[idx] = line
+                found = True
+                break
+
+        if not found:
+            lines.append(line)
+
+        out = "\n".join(lines) + "\n"
+        self._write_managed_text(path_str, out)
+
+    def _append_managed_block(self, path_str: str, marker: str, block: str,
+                              mode: int = 0o644, create_if_missing: bool = True) -> None:
+        """Append an idempotent driftify-managed block to a file."""
+        path = Path(path_str)
+        begin = f"# BEGIN DRIFTIFY {marker}"
+        end = f"# END DRIFTIFY {marker}"
+        wrapped = f"{begin}\n{block.rstrip()}\n{end}\n"
+
+        if path.exists():
+            with open(path) as fh:
+                current = fh.read()
+        else:
+            if not create_if_missing:
+                _warn(f"{path} not found — skipping block '{marker}'")
+                return
+            current = ""
+
+        if begin in current:
+            _info(f"Block already present in {path}: {marker}")
+            return
+
+        prefix = current
+        if prefix and not prefix.endswith("\n"):
+            prefix += "\n"
+        if prefix and not prefix.endswith("\n\n"):
+            prefix += "\n"
+
+        self._write_managed_text(path_str, prefix + wrapped, mode=mode)
+
     # ── apply entry point ─────────────────────────────────────────────────
 
     def _next_step(self, section_name: str) -> None:
@@ -335,17 +442,17 @@ class Driftify:
 
         self.drift_rpm()
         self.drift_services()
+        self.drift_config()
+        self.drift_network()
+        self.drift_storage()
+        self.drift_secrets()
         # Future sections — will be added iteratively:
-        # self.drift_config()
-        # self.drift_network()
-        # self.drift_storage()
         # self.drift_scheduled()
         # self.drift_containers()
         # self.drift_nonrpm()
         # self.drift_kernel()
         # self.drift_selinux()
         # self.drift_users()
-        # self.drift_secrets()
 
         if not self.dry_run:
             self.stamp.finish()
@@ -366,6 +473,7 @@ class Driftify:
         _info(f"Stamp from {self.stamp.data.get('started', '?')}, "
               f"profile={self.stamp.data.get('profile', '?')}")
 
+        self._undo_filesystem()
         self._undo_services()
         self._undo_rpm()
 
@@ -478,6 +586,288 @@ class Driftify:
             else:
                 _warn("bluetooth unit not found — skipping mask")
 
+    # ── Config Files ───────────────────────────────────────────────────────
+
+    def drift_config(self) -> None:
+        if "config" in self.skip:
+            _skip("Skipping Config section (--skip-config)")
+            return
+
+        self._next_step("config")
+
+        # Minimal: modify RPM-owned configs
+        self._set_or_append_directive("/etc/httpd/conf/httpd.conf", "Listen", "Listen 8080")
+        self._set_or_append_directive("/etc/httpd/conf/httpd.conf", "ServerName", "ServerName driftify.local")
+        self._set_or_append_directive("/etc/httpd/conf/httpd.conf", "MaxRequestWorkers", "MaxRequestWorkers 256")
+
+        self._set_or_append_directive("/etc/nginx/nginx.conf", "worker_processes", "worker_processes 2;")
+        self._append_managed_block(
+            "/etc/nginx/nginx.conf",
+            "nginx-server-block",
+            """server {
+    listen 8080 default_server;
+    server_name _;
+    location / {
+        return 200 "driftify nginx config drift\\n";
+    }
+}""",
+            create_if_missing=False,
+        )
+
+        # Minimal: unowned configs in /etc
+        self._ensure_dir(Path("/etc/myapp"))
+        self._write_managed_text(
+            "/etc/myapp/app.conf",
+            """[app]
+name = driftify-demo
+environment = production
+log_level = info
+""",
+        )
+        self._write_managed_text(
+            "/etc/myapp/database.yml",
+            """production:
+  adapter: postgresql
+  host: db.internal
+  port: 5432
+  database: myapp
+  username: appuser
+""",
+        )
+
+        if self.needs_profile("standard"):
+            self._set_or_append_directive("/etc/ssh/sshd_config", "PermitRootLogin", "PermitRootLogin no")
+            self._set_or_append_directive("/etc/ssh/sshd_config", "Port", "Port 2222")
+            self._append_managed_block(
+                "/etc/chrony.conf",
+                "chrony-servers",
+                """server 0.pool.ntp.org iburst
+server 1.pool.ntp.org iburst""",
+                create_if_missing=False,
+            )
+            self._write_managed_text(
+                "/etc/profile.d/custom-env.sh",
+                """#!/bin/sh
+export APP_ENV=production
+export LOG_LEVEL=info
+""",
+                mode=0o644,
+            )
+            self._write_managed_text(
+                "/etc/logrotate.d/myapp",
+                """/var/log/myapp/*.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+""",
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            self._append_managed_block(
+                "/etc/security/limits.conf",
+                "limits-nofile",
+                """* soft nofile 65535
+* hard nofile 65535""",
+                create_if_missing=False,
+            )
+            self._set_or_append_directive("/etc/audit/auditd.conf", "max_log_file", "max_log_file = 64")
+
+    # ── Secrets ────────────────────────────────────────────────────────────
+
+    def drift_secrets(self) -> None:
+        if "secrets" in self.skip:
+            _skip("Skipping Secrets section (--skip-secrets)")
+            return
+
+        self._next_step("secrets")
+        self._ensure_dir(Path("/etc/myapp"))
+
+        self._append_managed_block(
+            "/etc/myapp/app.conf",
+            "fake-secrets-app",
+            """aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY""",
+        )
+        self._append_managed_block(
+            "/etc/myapp/database.yml",
+            "fake-secrets-db",
+            """  password: SuperSecret123!
+  url: postgresql://dbuser:s3cret@db.internal:5432/myapp""",
+        )
+        self._write_managed_text(
+            "/etc/myapp/server.key",
+            """-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAzDRIFTIFYFAKEKEYMATERIALONLY
+THISISNOTAREALPRIVATEKEYDRIFTIFYEXAMPLEONLY
+-----END RSA PRIVATE KEY-----
+""",
+            mode=0o600,
+        )
+
+        if self.needs_profile("standard"):
+            self._append_managed_block(
+                "/etc/myapp/app.conf",
+                "fake-secrets-standard",
+                """github_pat = ghp_xxxxxxxxxxDRIFTIFYFAKExxxxxxxxxx""",
+            )
+            self._append_managed_block(
+                "/etc/profile.d/custom-env.sh",
+                "fake-secrets-env",
+                """export REDIS_URL=redis://:p4ssw0rd@redis.internal:6379""",
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            self._ensure_dir(Path("/opt/myapp"))
+            self._write_managed_text(
+                "/opt/myapp/.env",
+                """API_TOKEN=DRIFTIFY_FAKE_TOKEN_12345
+MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
+""",
+                mode=0o600,
+            )
+
+    # ── Network ────────────────────────────────────────────────────────────
+
+    def drift_network(self) -> None:
+        if "network" in self.skip:
+            _skip("Skipping Network section (--skip-network)")
+            return
+
+        self._next_step("network")
+
+        # Minimal: firewalld allowances
+        _info(f"{_I.GLOBE}  Adding firewalld rules (http, https, 8080/tcp)")
+        self.run_cmd(["firewall-cmd", "--permanent", "--add-service=http"], check=False)
+        self.run_cmd(["firewall-cmd", "--permanent", "--add-service=https"], check=False)
+        self.run_cmd(["firewall-cmd", "--permanent", "--add-port=8080/tcp"], check=False)
+        self.run_cmd(["firewall-cmd", "--reload"], check=False)
+
+        # Minimal: /etc/hosts additions
+        self._append_managed_block(
+            "/etc/hosts",
+            "hosts-entries",
+            """10.10.10.10 app.internal app
+10.10.10.11 db.internal db""",
+            create_if_missing=False,
+        )
+
+        if self.needs_profile("standard"):
+            # Standard: custom firewalld zone
+            self._write_managed_text(
+                "/etc/firewalld/zones/myapp.xml",
+                """<?xml version="1.0" encoding="utf-8"?>
+<zone>
+  <short>myapp</short>
+  <description>Driftify demo zone</description>
+  <service name="http"/>
+  <service name="https"/>
+  <port port="8080" protocol="tcp"/>
+</zone>
+""",
+            )
+
+            # Standard: static NM profile
+            self._write_managed_text(
+                "/etc/NetworkManager/system-connections/mgmt.nmconnection",
+                """[connection]
+id=mgmt
+type=ethernet
+interface-name=eth0
+autoconnect=true
+
+[ipv4]
+method=manual
+addresses=192.168.122.50/24,192.168.122.1
+dns=9.9.9.9;1.1.1.1;
+
+[ipv6]
+method=ignore
+""",
+                mode=0o600,
+            )
+
+            # Standard: proxy config
+            self._write_managed_text(
+                "/etc/profile.d/proxy.sh",
+                """#!/bin/sh
+export HTTP_PROXY=http://proxy.internal:3128
+export HTTPS_PROXY=http://proxy.internal:3128
+export NO_PROXY=localhost,127.0.0.1,.internal
+""",
+                mode=0o644,
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            # Kitchen-sink: static route + firewalld direct.xml
+            self._write_managed_text(
+                "/etc/sysconfig/network-scripts/route-eth0",
+                """10.20.0.0/16 via 192.168.122.1 dev eth0
+172.16.30.0/24 via 192.168.122.1 dev eth0
+""",
+            )
+            self._write_managed_text(
+                "/etc/firewalld/direct.xml",
+                """<?xml version="1.0" encoding="utf-8"?>
+<direct>
+  <rule ipv="ipv4" table="filter" chain="INPUT" priority="0">-p tcp --dport 8443 -j ACCEPT</rule>
+</direct>
+""",
+            )
+
+    # ── Storage ────────────────────────────────────────────────────────────
+
+    def drift_storage(self) -> None:
+        if "storage" in self.skip:
+            _skip("Skipping Storage section (--skip-storage)")
+            return
+
+        self._next_step("storage")
+
+        # Minimal: app state directories
+        self._ensure_dir(Path("/var/lib/myapp"))
+        self._ensure_dir(Path("/var/lib/myapp/data"))
+        self._ensure_dir(Path("/var/log/myapp"))
+
+        if self.needs_profile("standard"):
+            # Standard: non-functional noauto fstab entries
+            self._append_managed_block(
+                "/etc/fstab",
+                "nfs-entry",
+                """nfs.internal:/exports/myapp /mnt/myapp-nfs nfs defaults,noauto,_netdev 0 0""",
+                create_if_missing=False,
+            )
+            self._append_managed_block(
+                "/etc/fstab",
+                "cifs-entry",
+                """//files.internal/myshare /mnt/myapp-cifs cifs credentials=/etc/myapp/cifs.creds,noauto,_netdev,vers=3.0 0 0""",
+                create_if_missing=False,
+            )
+            self._write_managed_text(
+                "/etc/myapp/cifs.creds",
+                """username=myapp
+password=DRIFTIFY_FAKE_CIFS_PASS
+domain=INTERNAL
+""",
+                mode=0o600,
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            # Kitchen-sink: autofs map
+            self._write_managed_text(
+                "/etc/auto.master.d/app.autofs",
+                """/- /etc/auto.app
+""",
+            )
+            self._write_managed_text(
+                "/etc/auto.app",
+                """/mnt/auto-app -fstype=nfs4,rw,soft,intr nfs.internal:/exports/auto-app
+""",
+            )
+
     # ── Undo: Services ────────────────────────────────────────────────────
 
     def _undo_services(self) -> None:
@@ -502,6 +892,49 @@ class Driftify:
         for svc in masked:
             _info(f"{_I.MASK}  Unmasking {svc}")
             self.run_cmd(["systemctl", "unmask", svc], check=False)
+
+    def _undo_filesystem(self) -> None:
+        """Undo created files/dirs and restore original file contents."""
+        d = self.stamp.data
+        created_files = d.get("files_created", [])
+        created_dirs = d.get("dirs_created", [])
+        backups = d.get("file_backups", {})
+
+        if not (created_files or created_dirs or backups):
+            return
+
+        _banner(f"{_I.UNDO}  Undo: Filesystem")
+
+        for path_str in reversed(created_files):
+            path = Path(path_str)
+            if self.dry_run:
+                _dry(f"rm -f {path}")
+                continue
+            if path.exists():
+                path.unlink()
+                _info(f"Removed created file {path}")
+
+        for path_str, original in backups.items():
+            path = Path(path_str)
+            if self.dry_run:
+                _dry(f"restore file {path}")
+                continue
+            self._ensure_dir(path.parent)
+            with open(path, "w") as fh:
+                fh.write(original)
+            _info(f"Restored original file {path}")
+
+        for path_str in sorted(created_dirs, key=len, reverse=True):
+            path = Path(path_str)
+            if self.dry_run:
+                _dry(f"rmdir {path} (if empty)")
+                continue
+            if path.exists() and path.is_dir():
+                try:
+                    path.rmdir()
+                    _info(f"Removed created dir {path}")
+                except OSError:
+                    _warn(f"Directory not empty, leaving {path}")
 
     # ── Undo: RPM ─────────────────────────────────────────────────────────
 
@@ -567,8 +1000,26 @@ class Driftify:
         _info(f"{icon}  Services:   "
               f"{', '.join(svc_parts) if svc_parts else 'skipped'}")
 
+        # Config stats
+        cfg = "skipped" if "config" in self.skip else "RPM + unowned config drift applied"
+        _info(f"{SECTION_ICONS['config']}  Config:     {cfg}")
+
+        # Network stats
+        net = "skipped" if "network" in self.skip else "firewall/hosts/network files drift applied"
+        _info(f"{SECTION_ICONS['network']}  Network:    {net}")
+
+        # Storage stats
+        sto = "skipped" if "storage" in self.skip else "fstab + /var storage drift applied"
+        _info(f"{SECTION_ICONS['storage']}  Storage:    {sto}")
+
+        # Secrets stats
+        sec = "skipped" if "secrets" in self.skip else "fake secrets planted"
+        _info(f"{SECTION_ICONS['secrets']}  Secrets:    {sec}")
+
         # Placeholder lines for future sections
-        for section in SECTIONS[2:]:
+        for section in SECTIONS:
+            if section in self._IMPLEMENTED:
+                continue
             icon = SECTION_ICONS[section]
             label = SECTION_LABELS[section]
             _skip(f"{icon}  {label}: not yet implemented")

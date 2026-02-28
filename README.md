@@ -87,16 +87,28 @@ Sections are being implemented iteratively:
 
 - [x] 📦 RPM / Packages
 - [x] ⚙️ Services
-- [ ] 🔧 Config Files
-- [ ] 🌐 Network
-- [ ] 💾 Storage
+- [x] 🔧 Config Files
+- [x] 🌐 Network
+- [x] 💾 Storage
 - [ ] ⏰ Scheduled Tasks
 - [ ] 🦭 Containers
 - [ ] 🧩 Non-RPM Software
 - [ ] 🐧 Kernel / Boot
 - [ ] 🛡️ SELinux / Security
 - [ ] 👥 Users / Groups
-- [ ] 🔑 Secrets
+- [x] 🔑 Secrets
+
+## Running tests
+
+```bash
+make test
+```
+
+Equivalent direct command:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## Requirements
 
