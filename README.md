@@ -26,6 +26,7 @@ sudo ./driftify.py --profile kitchen-sink   # everything
 sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
 sudo ./driftify.py --undo                   # reverse previous run
 sudo ./driftify.py --dry-run                # preview without changes
+sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
 ```
 
 ## CLI reference
@@ -39,6 +40,8 @@ sudo ./driftify.py --dry-run                # preview without changes
 | `-y`, `--yes` | Skip interactive confirmation prompt |
 | `-q`, `--quiet` | Show only section banners, warnings, and errors |
 | `--verbose` | Reserved for future use |
+| `--run-yoinkc` | After applying drift, download and run `run-yoinkc.sh` |
+| `--yoinkc-output DIR` | Output directory for yoinkc artifacts (default: `./yoinkc-output`) |
 | `--help` | Show help |
 
 ### Sections
@@ -86,6 +89,7 @@ Each section maps to a yoinkc inspector:
 - 🔑 **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
 - 🎨 **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
 - ✅ **Interactive confirmation** → prints a plain-English summary of what will happen and asks `[y/N]` before touching anything. Use `-y` / `--yes` to bypass. Skipped automatically in `--dry-run` mode.
+- 🔬 **yoinkc handoff** → `--run-yoinkc` downloads and runs `run-yoinkc.sh` immediately after drift is applied, writing artifacts to `--yoinkc-output`.
 
 ## Running tests
 

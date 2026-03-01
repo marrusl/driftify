@@ -361,6 +361,28 @@ class TestConfirmation(DriftifyTestCase):
         args = p.parse_args([])
         self.assertFalse(args.yes)
 
+    def test_run_yoinkc_flag_parsed(self):
+        p = driftify.build_parser()
+        args = p.parse_args(["--run-yoinkc"])
+        self.assertTrue(args.run_yoinkc)
+        self.assertEqual(args.yoinkc_output, "./yoinkc-output")
+        args = p.parse_args(["--run-yoinkc", "--yoinkc-output", "/tmp/out"])
+        self.assertEqual(args.yoinkc_output, "/tmp/out")
+        args = p.parse_args([])
+        self.assertFalse(args.run_yoinkc)
+
+    def test_launch_yoinkc_dry_run(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[],
+                              run_yoinkc=True, yoinkc_output="/tmp/test-out")
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._launch_yoinkc()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("run-yoinkc.sh", output)
+        self.assertIn("/tmp/test-out", output)
+
     def test_quiet_flag_parsed(self):
         p = driftify.build_parser()
         args = p.parse_args(["-q"])

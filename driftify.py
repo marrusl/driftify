@@ -281,9 +281,14 @@ class Driftify:
         "users", "secrets",
     }
 
+    _YOINKC_SCRIPT_URL = (
+        "https://raw.githubusercontent.com/marrusl/yoinkc/main/run-yoinkc.sh"
+    )
+
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
                  undo: bool = False, yes: bool = False,
-                 quiet: bool = False, verbose: bool = False):
+                 quiet: bool = False, verbose: bool = False,
+                 run_yoinkc: bool = False, yoinkc_output: str = "./yoinkc-output"):
         self.profile = profile
         self.dry_run = dry_run
         self.skip = set(skip_sections)
@@ -295,6 +300,8 @@ class Driftify:
         # subprocess output currently passes through directly so --verbose
         # has no additional effect today.
         self.verbose = verbose
+        self.run_yoinkc = run_yoinkc
+        self.yoinkc_output = yoinkc_output
         self.stamp = StampFile()
         self.os_id, self.os_major = detect_os()
         self._t0 = None
@@ -677,6 +684,9 @@ class Driftify:
             self.stamp.finish()
 
         self._print_summary()
+
+        if self.run_yoinkc:
+            self._launch_yoinkc()
 
     # ── undo entry point ──────────────────────────────────────────────────
 
@@ -2041,6 +2051,38 @@ domain=INTERNAL
 
     # ── Summary ───────────────────────────────────────────────────────────
 
+    def _launch_yoinkc(self) -> None:
+        """Download run-yoinkc.sh from the yoinkc repo and execute it."""
+        import urllib.request
+        import tempfile
+        import stat
+
+        _banner(f"{_I.ROCKET}  Launching yoinkc")
+        _info(f"{_I.DOWNLOAD}  Script: {self._YOINKC_SCRIPT_URL}")
+        _info(f"{_I.DATABASE}  Output: {self.yoinkc_output}")
+
+        if self.dry_run:
+            _dry(f"curl {self._YOINKC_SCRIPT_URL} | sh -s -- {self.yoinkc_output}")
+            return
+
+        script_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".sh", delete=False, mode="w"
+            ) as tf:
+                script_path = tf.name
+            urllib.request.urlretrieve(self._YOINKC_SCRIPT_URL, script_path)
+            os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+            self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
+        except Exception as exc:
+            _warn(f"Could not launch yoinkc: {exc}")
+        finally:
+            if script_path:
+                try:
+                    os.unlink(script_path)
+                except OSError:
+                    pass
+
     def _count_created(self, prefix: str) -> int:
         """Count files_created entries whose path starts with *prefix*."""
         return sum(
@@ -2278,6 +2320,8 @@ domain=INTERNAL
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
         _info(f"{_I.UNDO}  To undo:    sudo ./driftify.py --undo")
+        if not self.run_yoinkc:
+            _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -2332,6 +2376,14 @@ examples:
         help="reserved for future use (no effect today; subprocess output "
              "already passes through directly)",
     )
+    p.add_argument(
+        "--run-yoinkc", action="store_true",
+        help="after applying drift, download and run run-yoinkc.sh",
+    )
+    p.add_argument(
+        "--yoinkc-output", default="./yoinkc-output", metavar="DIR",
+        help="output directory for yoinkc artifacts (default: ./yoinkc-output)",
+    )
     return p
 
 
@@ -2356,6 +2408,8 @@ def main() -> None:
         yes=args.yes,
         quiet=args.quiet,
         verbose=args.verbose,
+        run_yoinkc=args.run_yoinkc,
+        yoinkc_output=args.yoinkc_output,
     )
 
     if args.undo:
