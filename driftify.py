@@ -2322,6 +2322,9 @@ domain=INTERNAL
         _info(f"{_I.UNDO}  To undo:    sudo ./driftify.py --undo")
         if not self.run_yoinkc:
             _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
+            _info(f"             or: curl -fsSL "
+                  f"https://raw.githubusercontent.com/marrusl/yoinkc/main/"
+                  f"run-yoinkc.sh | sh")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
