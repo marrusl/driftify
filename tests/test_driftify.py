@@ -1038,6 +1038,72 @@ class TestUndoFilesystem(DriftifyTestCase):
             self.assertFalse(subdir.exists())
 
 
+class TestUndoIssueSummary(DriftifyTestCase):
+    def test_run_cmd_records_failure_in_undo_mode(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
+                              undo=True)
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 1
+        with unittest.mock.patch("subprocess.run", return_value=mock_result):
+            self._suppress.__exit__(None, None, None)
+            with redirect_stdout(io.StringIO()):
+                d.run_cmd(["failing-cmd"], check=False)
+            self._suppress.__enter__()
+        self.assertEqual(len(d._issues), 1)
+        self.assertIn("exited 1", d._issues[0])
+
+    def test_run_cmd_does_not_record_failure_outside_undo(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
+                              undo=False)
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 1
+        with unittest.mock.patch("subprocess.run", return_value=mock_result):
+            self._suppress.__exit__(None, None, None)
+            with redirect_stdout(io.StringIO()):
+                d.run_cmd(["failing-cmd"], check=False)
+            self._suppress.__enter__()
+        self.assertEqual(len(d._issues), 0)
+
+    def test_undo_filesystem_records_nonempty_dir(self):
+        with tempfile.TemporaryDirectory() as td:
+            nonempty = Path(td) / "nonempty"
+            nonempty.mkdir()
+            (nonempty / "file.txt").write_text("contents")
+
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
+                                  undo=True)
+            d.stamp.data = {
+                "files_created": [], "dirs_created": [str(nonempty)],
+                "recursive_dirs_created": [], "file_backups": {},
+            }
+            self._suppress.__exit__(None, None, None)
+            with redirect_stdout(io.StringIO()):
+                d._undo_filesystem()
+            self._suppress.__enter__()
+            self.assertEqual(len(d._issues), 1)
+            self.assertIn("not empty", d._issues[0])
+
+    def test_issues_list_initialises_empty(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self.assertEqual(d._issues, [])
+
+    def test_issues_list_is_printed_when_populated(self):
+        """Populated _issues are surfaced via _warn calls."""
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[],
+                              undo=True)
+        d._issues = ["exited 1: some-cmd", "Directory not empty, leaving /x"]
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            for issue in d._issues:
+                driftify._warn(f"  • {issue}")
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("some-cmd", output)
+        self.assertIn("not empty", output)
+
+
 class TestUndoNetwork(DriftifyTestCase):
     def test_undo_network_dry_run_output(self):
         driftify.STAMP_PATH = Path("/tmp/test-stamp.json")

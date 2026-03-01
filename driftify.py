@@ -290,6 +290,7 @@ class Driftify:
         self.undo_mode = undo
         self.yes = yes
         self.quiet = quiet
+        self._issues: list = []  # collects undo failure messages for end summary
         # verbose: reserved for future use when capture=True calls are added;
         # subprocess output currently passes through directly so --verbose
         # has no additional effect today.
@@ -326,7 +327,10 @@ class Driftify:
             capture_output=capture, text=capture,
         )
         if not check and result.returncode != 0:
-            _warn(f"  ↳ exited {result.returncode}: {pretty}")
+            msg = f"exited {result.returncode}: {pretty}"
+            _warn(f"  ↳ {msg}")
+            if self.undo_mode:
+                self._issues.append(msg)
         return result
 
     def _dnf_last_tid(self):
@@ -712,7 +716,16 @@ class Driftify:
             _info(f"{_I.TRASH}  Stamp file removed")
 
         elapsed = time.monotonic() - self._t0
-        _banner(f"{_I.CHECK}  Undo complete ({int(elapsed)}s)")
+
+        if self._issues:
+            _banner(f"{_I.WARN}  Undo complete with {len(self._issues)} "
+                    f"issue(s) ({int(elapsed)}s)")
+            for issue in self._issues:
+                _warn(f"  • {issue}")
+            print()
+            _warn("Some operations may need manual cleanup — see above.")
+        else:
+            _banner(f"{_I.CHECK}  Undo complete ({int(elapsed)}s)")
 
     # ── RPM / Packages ────────────────────────────────────────────────────
 
@@ -1347,7 +1360,21 @@ domain=INTERNAL
         if not at_jobs:
             return
         _banner(f"{_I.UNDO}  Undo: Scheduled Tasks (at jobs)")
+
+        # Check which jobs are still pending before calling atrm.
+        # Jobs older than 1 hour will have already run and atrm would
+        # fail with "no such job" — treat that as a non-error.
+        if not self.dry_run:
+            r = subprocess.run(["atq"], capture_output=True, text=True)
+            pending = {line.split()[0] for line in r.stdout.splitlines()
+                       if line.strip()}
+        else:
+            pending = None  # unknown in dry-run; attempt anyway
+
         for job_id in at_jobs:
+            if pending is not None and str(job_id) not in pending:
+                _info(f"{_I.CLOCK}  At job {job_id} already expired — skipping")
+                continue
             _info(f"{_I.CLOCK}  Removing at job {job_id}")
             self.run_cmd(["atrm", str(job_id)], check=False)
 
@@ -1974,7 +2001,9 @@ domain=INTERNAL
                     path.rmdir()
                     _info(f"Removed created dir {path}")
                 except OSError:
-                    _warn(f"Directory not empty, leaving {path}")
+                    msg = f"Directory not empty, leaving {path}"
+                    _warn(msg)
+                    self._issues.append(msg)
 
         # Recursively remove trees explicitly created by driftify
         # (venvs, node_modules, git-init'd dirs, etc.)
