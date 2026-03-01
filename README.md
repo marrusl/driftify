@@ -1,6 +1,6 @@
 # driftify
 
-Apply synthetic drift to a fresh RHEL or CentOS Stream 9/10 system so that [yoinkc](https://github.com/marrusl/yoinkc) has something to detect.
+Apply synthetic drift to a fresh RHEL, CentOS Stream, or Fedora system so that [yoinkc](https://github.com/marrusl/yoinkc) has something to detect.
 
 driftify is the fixture half of the yoinkc development workflow: run driftify on a clean host, then run yoinkc, and every inspector lights up with real findings — packages, configs, services, containers, secrets, the works.
 
@@ -13,7 +13,7 @@ sudo ./driftify.py                    # standard profile
 sudo ./driftify.py --undo             # reverse everything
 ```
 
-No dependencies beyond Python 3 (ships on every RHEL/CentOS Stream minimal install).
+No dependencies beyond Python 3 (ships on every RHEL, CentOS Stream, and Fedora minimal install).
 
 ## Usage
 
@@ -81,7 +81,7 @@ Each section maps to a yoinkc inspector:
 - ⏭️ **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
 - 👁️ **Dry-run mode** → `--dry-run` prints every command without executing anything.
 - ↩️ **Undo support** → `--undo` reverses all modifications using a JSON stamp file at `/etc/driftify.stamp`. Stamp tracks dnf transaction IDs, created files, enabled services, SELinux booleans, and more.
-- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9 vs EL10.
+- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
 - ♻️ **Idempotent** → safe to run twice without breaking the system.
 - 🔑 **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
 - 🎨 **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
@@ -101,6 +101,16 @@ python3 -m unittest discover -s tests -v
 
 ## Requirements
 
-- Python 3.6+ (present on RHEL/CentOS Stream 9 and 10 minimal installs)
+- Python 3.6+ (present on all supported platforms)
 - Root access
 - Network access (for dnf repos, EPEL, pip packages, binary downloads)
+
+### Supported platforms
+
+| Platform | Status |
+|---|---|
+| CentOS Stream 9 | ✅ Tested |
+| CentOS Stream 10 | ✅ Supported (uses dnf5) |
+| RHEL 9.6+ | ✅ Supported |
+| RHEL 10 | ✅ Supported (uses dnf5) |
+| Fedora | ✅ Supported (EPEL skipped; packages available natively) |
