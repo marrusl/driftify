@@ -114,7 +114,7 @@ python3 -m unittest discover -s tests -v
 | Platform | Status |
 |---|---|
 | CentOS Stream 9 | ✅ Tested |
-| CentOS Stream 10 | ✅ Supported (uses dnf5) |
-| RHEL 9.6+ | ✅ Supported |
-| RHEL 10 | ✅ Supported (uses dnf5) |
+| CentOS Stream 10 | ✅ Tested |
+| RHEL 9.6+ | ✅ Tested |
+| RHEL 10 | ✅ Tested |
 | Fedora | ✅ Supported (EPEL skipped; packages available natively) |
