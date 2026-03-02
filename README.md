@@ -117,4 +117,4 @@ python3 -m unittest discover -s tests -v
 | CentOS Stream 10 | ✅ Tested |
 | RHEL 9.6+ | ✅ Tested |
 | RHEL 10 | ✅ Tested |
-| Fedora | ✅ Supported (EPEL skipped; packages available natively) |
+| Fedora | ✅ Tested (EPEL skipped; packages available natively) |

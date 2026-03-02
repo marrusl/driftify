@@ -198,6 +198,29 @@ class TestHelpersAndDryRun(DriftifyTestCase):
         self.assertIn("/etc/words.conf", output)
         self.assertIn(driftify.GHOST_PACKAGE, output)
 
+    def test_kdump_dry_run_skips_when_unit_absent(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=["rpm"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists",
+                                            return_value=False):
+                d.drift_services()
+        self._suppress.__enter__()
+        self.assertNotIn("systemctl disable kdump", buf.getvalue())
+        self.assertIn("kdump unit not found", buf.getvalue())
+
+    def test_kdump_dry_run_disables_when_present(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=["rpm"])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists",
+                                            return_value=True):
+                d.drift_services()
+        self._suppress.__enter__()
+        self.assertIn("systemctl disable kdump", buf.getvalue())
+
     def test_bluetooth_dry_run_respects_unit_absence(self):
         d = driftify.Driftify("standard", dry_run=True, skip_sections=["rpm"])
         self._suppress.__exit__(None, None, None)

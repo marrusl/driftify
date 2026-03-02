@@ -831,11 +831,27 @@ class Driftify:
             if not self.dry_run:
                 self.stamp.record("services_enabled", svc)
 
-        # Disable a default service (minimal)
-        _info(f"{_I.BAN}  Disabling kdump")
-        self.run_cmd(["systemctl", "disable", "kdump"], check=False)
-        if not self.dry_run:
-            self.stamp.record("services_disabled", "kdump")
+        # Disable kdump if it exists (not present on Fedora or minimal installs)
+        _KDUMP_UNIT_PATHS = [
+            Path("/usr/lib/systemd/system/kdump.service"),
+            Path("/lib/systemd/system/kdump.service"),
+        ]
+        if self.dry_run:
+            kdump_exists = any(p.exists() for p in _KDUMP_UNIT_PATHS)
+        else:
+            r = subprocess.run(
+                ["systemctl", "cat", "kdump"],
+                capture_output=True, text=True,
+            )
+            kdump_exists = r.returncode == 0
+
+        if kdump_exists:
+            _info(f"{_I.BAN}  Disabling kdump")
+            self.run_cmd(["systemctl", "disable", "kdump"], check=False)
+            if not self.dry_run:
+                self.stamp.record("services_disabled", "kdump")
+        else:
+            _warn("kdump unit not found — skipping disable")
 
         # Mask bluetooth if it exists (standard+)
         if self.needs_profile("standard"):
