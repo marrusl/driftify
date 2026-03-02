@@ -320,8 +320,10 @@ class Driftify:
     def run_cmd(self, cmd, check=True, capture=False):
         """Execute *cmd*, or print it if --dry-run.
 
-        With --quiet the "Running:" echo is suppressed; warnings and errors
-        still print.  [DRY RUN] lines are never suppressed.
+        With --quiet the "Running:" echo is suppressed and all subprocess
+        output is captured and discarded so it doesn't reach the terminal.
+        The caller can re-run without --quiet to see diagnostic detail.
+        Warnings on non-zero exit and [DRY RUN] lines are never suppressed.
         """
         pretty = " ".join(str(c) for c in cmd)
         if self.dry_run:
@@ -329,9 +331,12 @@ class Driftify:
             return None
         if not self.quiet:
             _info(f"Running: {pretty}")
+        # capture=True means the caller needs stdout; quiet=True means we
+        # want to suppress terminal noise — both cases use capture_output=True.
+        capture_out = capture or self.quiet
         result = subprocess.run(
             cmd, check=check,
-            capture_output=capture, text=capture,
+            capture_output=capture_out, text=capture_out,
         )
         if not check and result.returncode != 0:
             msg = f"exited {result.returncode}: {pretty}"
