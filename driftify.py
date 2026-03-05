@@ -208,17 +208,11 @@ def detect_os() -> tuple:
 # ── StampFile ────────────────────────────────────────────────────────────────
 
 class StampFile:
-    """JSON-backed ledger of everything driftify did, consumed by --undo."""
+    """Run record written to /etc/driftify.stamp after a successful apply."""
 
     def __init__(self, path=None):
         self.path = path or STAMP_PATH
         self.data: dict = {}
-
-    def load(self) -> dict:
-        if self.path.exists():
-            with open(self.path) as fh:
-                self.data = json.load(fh)
-        return self.data
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -235,23 +229,6 @@ class StampFile:
             "profile": profile,
             "os_id": os_id,
             "os_major": os_major,
-            "dnf_transaction_start": None,
-            "dnf_transaction_end": None,
-            "ghost_package": None,
-            "services_enabled": [],
-            "services_disabled": [],
-            "services_masked": [],
-            "files_created": [],
-            "dirs_created": [],
-            "file_backups": {},
-            "users_created": [],
-            "groups_created": [],
-            "firewall_services": [],
-            "firewall_ports": [],
-            "at_jobs": [],
-            "recursive_dirs_created": [],
-            "selinux_booleans": [],
-            "selinux_modules": [],
         }
         self.save()
 
@@ -259,16 +236,6 @@ class StampFile:
         self.data["finished"] = datetime.now(timezone.utc).isoformat()
         self.save()
 
-    def record(self, key: str, value) -> None:
-        """Append *value* to a list key, or set a scalar key.
-
-        Mutates in-memory only.  Call ``save()`` at section boundaries.
-        """
-        if isinstance(self.data.get(key), list):
-            if value not in self.data[key]:
-                self.data[key].append(value)
-        else:
-            self.data[key] = value
 
 
 # ── Driftify ─────────────────────────────────────────────────────────────────
@@ -286,16 +253,14 @@ class Driftify:
     )
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
-                 undo: bool = False, yes: bool = False,
+                 yes: bool = False,
                  quiet: bool = False, verbose: bool = False,
                  run_yoinkc: bool = False, yoinkc_output: str = "./yoinkc-output"):
         self.profile = profile
         self.dry_run = dry_run
         self.skip = set(skip_sections)
-        self.undo_mode = undo
         self.yes = yes
         self.quiet = quiet
-        self._issues: list = []  # collects undo failure messages for end summary
         # verbose: reserved for future use when capture=True calls are added;
         # subprocess output currently passes through directly so --verbose
         # has no additional effect today.
@@ -339,80 +304,40 @@ class Driftify:
             capture_output=capture_out, text=capture_out,
         )
         if not check and result.returncode != 0:
-            msg = f"exited {result.returncode}: {pretty}"
-            _warn(f"  ↳ {msg}")
-            if self.undo_mode:
-                self._issues.append(msg)
+            _warn(f"  ↳ exited {result.returncode}: {pretty}")
         return result
 
-    def _dnf_last_tid(self):
-        """Return the most recent dnf transaction ID, or None."""
-        r = subprocess.run(
-            ["dnf", "history", "list"],
-            capture_output=True, text=True,
-        )
-        for line in r.stdout.splitlines():
-            parts = line.split()
-            if parts and parts[0].isdigit():
-                return int(parts[0])
-        return None
-
-    def _backup_file_once(self, path: Path) -> None:
-        """Save original file content to stamp once."""
-        if self.dry_run or not path.exists():
-            return
-        backups = self.stamp.data.setdefault("file_backups", {})
-        key = str(path)
-        if key in backups:
-            return
-        with open(path) as fh:
-            backups[key] = fh.read()
-        self.stamp.save()
-
     def _ensure_dir(self, path: Path) -> None:
-        """Create directory (and track it) when needed."""
+        """Create directory when needed."""
         if path.exists():
             return
         if self.dry_run:
             _dry(f"mkdir -p {path}")
             return
         path.mkdir(parents=True, exist_ok=True)
-        self.stamp.record("dirs_created", str(path))
         _info(f"Created dir {path}")
 
     def _write_managed_text(self, path_str: str, content: str, mode: int = 0o644) -> None:
-        """Write file with stamp tracking for created/modified files.
+        """Write a text file idempotently.
 
-        NOTE: reads existing content in text mode for change-detection and
-        backup.  Only suitable for text files — calling this on a binary
-        path would produce a corrupt backup and likely a UnicodeDecodeError.
-        All files driftify currently manages are text; keep it that way.
+        NOTE: reads existing content in text mode for change-detection.
+        Only suitable for text files — binary paths would raise
+        UnicodeDecodeError.  All files driftify manages are text.
         """
         path = Path(path_str)
-        exists = path.exists()
-
-        if exists:
+        if path.exists():
             with open(path) as fh:
-                old = fh.read()
-            if old == content:
-                _info(f"No change needed: {path}")
-                return
-        else:
-            old = None
-
+                if fh.read() == content:
+                    _info(f"No change needed: {path}")
+                    return
         if self.dry_run:
-            action = "update" if exists else "create"
+            action = "update" if path.exists() else "create"
             _dry(f"{action} file {path}")
             return
-
         self._ensure_dir(path.parent)
-        if exists:
-            self._backup_file_once(path)
         with open(path, "w") as fh:
             fh.write(content)
         os.chmod(path, mode)
-        if not exists:
-            self.stamp.record("files_created", str(path))
         if not self.quiet:
             _info(f"Wrote {path}")
 
@@ -600,7 +525,7 @@ class Driftify:
 
         return lines
 
-    def _confirm(self, undo_mode: bool = False) -> None:
+    def _confirm(self) -> None:
         """Print a description of what will happen and ask for confirmation.
 
         Exits immediately if the user declines.  Skipped when --yes or
@@ -610,7 +535,7 @@ class Driftify:
             return
 
         print()
-        if undo_mode:
+        if False:  # undo mode removed
             started = self.stamp.data.get("started", "unknown time")
             profile = self.stamp.data.get("profile", "unknown")
             print(f"  {_C.BOLD}About to reverse the previous driftify run:{_C.RESET}")
@@ -627,7 +552,6 @@ class Driftify:
             for line in self._run_description():
                 print(f"    • {line}")
             print()
-            print(f"  {_C.DIM}Run --undo afterwards to reverse all changes.{_C.RESET}")
 
         print()
         try:
@@ -662,9 +586,8 @@ class Driftify:
 
         if STAMP_PATH.exists():
             _warn(f"Existing stamp file at {STAMP_PATH} will be overwritten")
-            _warn("(Run --undo first if you need to reverse the previous run)")
 
-        self._confirm(undo_mode=False)
+        self._confirm()
 
         if not self.dry_run:
             self.stamp.start(self.profile, self.os_id, self.os_major)
@@ -693,55 +616,6 @@ class Driftify:
         if self.run_yoinkc:
             self._launch_yoinkc()
 
-    # ── undo entry point ──────────────────────────────────────────────────
-
-    def run_undo(self) -> None:
-        self._t0 = time.monotonic()
-        _banner(f"{_I.UNDO}  driftify --undo")
-
-        self.stamp.load()
-        if not self.stamp.data:
-            _error(f"No stamp file at {STAMP_PATH} — nothing to undo")
-            sys.exit(1)
-
-        _info(f"Stamp from {self.stamp.data.get('started', '?')}, "
-              f"profile={self.stamp.data.get('profile', '?')}")
-
-        self._confirm(undo_mode=True)
-
-        self._undo_filesystem()
-
-        # Reload systemd if any created unit files were removed
-        unit_files = [f for f in self.stamp.data.get("files_created", [])
-                      if "/systemd/system/" in f]
-        if unit_files:
-            _info(f"{_I.COGS}  Reloading systemd after unit file removal")
-            self.run_cmd(["systemctl", "daemon-reload"], check=False)
-
-        self._undo_scheduled()
-        self._undo_selinux()
-        self._undo_kernel()
-        self._undo_users()
-        self._undo_network()
-        self._undo_services()
-        self._undo_rpm()
-
-        if not self.dry_run:
-            self.stamp.path.unlink(missing_ok=True)
-            _info(f"{_I.TRASH}  Stamp file removed")
-
-        elapsed = time.monotonic() - self._t0
-
-        if self._issues:
-            _banner(f"{_I.WARN}  Undo complete with {len(self._issues)} "
-                    f"issue(s) ({int(elapsed)}s)")
-            for issue in self._issues:
-                _warn(f"  • {issue}")
-            print()
-            _warn("Some operations may need manual cleanup — see above.")
-        else:
-            _banner(f"{_I.CHECK}  Undo complete ({int(elapsed)}s)")
-
     # ── RPM / Packages ────────────────────────────────────────────────────
 
     def drift_rpm(self) -> None:
@@ -750,11 +624,6 @@ class Driftify:
             return
 
         self._next_step("rpm")
-
-        # Snapshot dnf history before we touch anything
-        if not self.dry_run:
-            tid = self._dnf_last_tid()
-            self.stamp.record("dnf_transaction_start", tid)
 
         # EPEL repo — all profiles
         epel_url = EPEL_URLS.get(self.os_major)
@@ -806,14 +675,6 @@ class Driftify:
                 "max_suggestions = 10\n",
             )
             self.run_cmd(["dnf", "remove", "-y", GHOST_PACKAGE], check=False)
-            if not self.dry_run:
-                self.stamp.record("ghost_package", GHOST_PACKAGE)
-
-        # Snapshot final transaction ID
-        if not self.dry_run:
-            tid = self._dnf_last_tid()
-            self.stamp.record("dnf_transaction_end", tid)
-            self.stamp.save()
 
     # ── Services ──────────────────────────────────────────────────────────
 
@@ -828,8 +689,6 @@ class Driftify:
         for svc in ("httpd", "nginx"):
             _info(f"{_I.TOGGLE}  Enabling {svc}")
             self.run_cmd(["systemctl", "enable", svc], check=False)
-            if not self.dry_run:
-                self.stamp.record("services_enabled", svc)
 
         # Disable kdump if it exists (not present on Fedora or minimal installs)
         _KDUMP_UNIT_PATHS = [
@@ -848,8 +707,6 @@ class Driftify:
         if kdump_exists:
             _info(f"{_I.BAN}  Disabling kdump")
             self.run_cmd(["systemctl", "disable", "kdump"], check=False)
-            if not self.dry_run:
-                self.stamp.record("services_disabled", "kdump")
         else:
             _warn("kdump unit not found — skipping disable")
 
@@ -871,13 +728,8 @@ class Driftify:
             if bt_exists:
                 _info(f"{_I.MASK}  Masking bluetooth")
                 self.run_cmd(["systemctl", "mask", "bluetooth"], check=False)
-                if not self.dry_run:
-                    self.stamp.record("services_masked", "bluetooth")
             else:
                 _warn("bluetooth unit not found — skipping mask")
-
-        if not self.dry_run:
-            self.stamp.save()
 
     # ── Config Files ───────────────────────────────────────────────────────
 
@@ -975,9 +827,6 @@ export LOG_LEVEL=info
             )
             self._set_or_append_directive("/etc/audit/auditd.conf", "max_log_file", "max_log_file = 64")
 
-        if not self.dry_run:
-            self.stamp.save()
-
     # ── Secrets ────────────────────────────────────────────────────────────
 
     def drift_secrets(self) -> None:
@@ -1032,9 +881,6 @@ MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
                 mode=0o600,
             )
 
-        if not self.dry_run:
-            self.stamp.save()
-
     # ── Network ────────────────────────────────────────────────────────────
 
     def drift_network(self) -> None:
@@ -1052,13 +898,9 @@ MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
         for svc in fw_services:
             self.run_cmd(["firewall-cmd", "--permanent", f"--add-service={svc}"],
                          check=False)
-            if not self.dry_run:
-                self.stamp.record("firewall_services", svc)
         for port in fw_ports:
             self.run_cmd(["firewall-cmd", "--permanent", f"--add-port={port}"],
                          check=False)
-            if not self.dry_run:
-                self.stamp.record("firewall_ports", port)
         self.run_cmd(["firewall-cmd", "--reload"], check=False)
 
         # Minimal: /etc/hosts additions
@@ -1133,9 +975,6 @@ export NO_PROXY=localhost,127.0.0.1,.internal,github.com,githubusercontent.com,g
 """,
             )
 
-        if not self.dry_run:
-            self.stamp.save()
-
     # ── Storage ────────────────────────────────────────────────────────────
 
     def drift_storage(self) -> None:
@@ -1185,9 +1024,6 @@ domain=INTERNAL
                 """/mnt/auto-app -fstype=nfs4,rw,soft,intr nfs.internal:/exports/auto-app
 """,
             )
-
-        if not self.dry_run:
-            self.stamp.save()
 
     # ── Scheduled Tasks ────────────────────────────────────────────────────
 
@@ -1253,8 +1089,6 @@ domain=INTERNAL
             _info(f"{_I.TOGGLE}  Enabling myapp-report.timer")
             self.run_cmd(["systemctl", "enable", "myapp-report.timer"],
                          check=False)
-            if not self.dry_run:
-                self.stamp.record("services_enabled", "myapp-report.timer")
 
             # Queue an at job
             _info(f"{_I.CLOCK}  Starting atd and queuing at job")
@@ -1270,9 +1104,6 @@ domain=INTERNAL
                 "APP_ENV=production\n"
                 "30 6 * * 1-5 appuser /opt/myapp/scripts/weekday-report.sh\n",
             )
-
-        if not self.dry_run:
-            self.stamp.save()
 
     def _queue_at_job(self) -> None:
         """Queue an at job and store its ID in the stamp for undo."""
@@ -1290,7 +1121,6 @@ domain=INTERNAL
         match = re.search(r"job\s+(\d+)", r.stderr)
         if match:
             job_id = int(match.group(1))
-            self.stamp.record("at_jobs", job_id)
             _info(f"{_I.CLOCK}  Queued at job {job_id}")
         else:
             _warn(f"Could not parse at job ID from: {r.stderr.strip()}")
@@ -1307,23 +1137,12 @@ domain=INTERNAL
         # Minimal: create appgroup then appuser with that primary group
         _info(f"{_I.USERS}  Creating group appgroup (GID 1001)")
         self.run_cmd(["groupadd", "-g", "1001", "appgroup"], check=False)
-        if not self.dry_run:
-            r = subprocess.run(["getent", "group", "appgroup"],
-                               capture_output=True)
-            if r.returncode == 0:
-                self.stamp.record("groups_created", "appgroup")
-
         _info(f"{_I.USERS}  Creating user appuser (UID 1001, primary: appgroup)")
         self.run_cmd(
             ["useradd", "-u", "1001", "-g", "appgroup", "-m",
              "-c", "App User", "appuser"],
             check=False,
         )
-        if not self.dry_run:
-            r = subprocess.run(["id", "appuser"], capture_output=True)
-            if r.returncode == 0:
-                self.stamp.record("users_created", "appuser")
-
         if self.needs_profile("standard"):
             _info(f"{_I.USERS}  Creating user dbuser (UID 1002, nologin)")
             self.run_cmd(
@@ -1331,11 +1150,6 @@ domain=INTERNAL
                  "-c", "DB Service Account", "dbuser"],
                 check=False,
             )
-            if not self.dry_run:
-                r = subprocess.run(["id", "dbuser"], capture_output=True)
-                if r.returncode == 0:
-                    self.stamp.record("users_created", "dbuser")
-
             # Sudoers rule
             self._write_managed_text(
                 "/etc/sudoers.d/appusers",
@@ -1380,34 +1194,6 @@ domain=INTERNAL
                 "appuser:100000:65536",
                 create_if_missing=False,
             )
-
-        if not self.dry_run:
-            self.stamp.save()
-
-    # ── Undo: Scheduled Tasks ──────────────────────────────────────────────
-
-    def _undo_scheduled(self) -> None:
-        at_jobs = self.stamp.data.get("at_jobs", [])
-        if not at_jobs:
-            return
-        _banner(f"{_I.UNDO}  Undo: Scheduled Tasks (at jobs)")
-
-        # Check which jobs are still pending before calling atrm.
-        # Jobs older than 1 hour will have already run and atrm would
-        # fail with "no such job" — treat that as a non-error.
-        if not self.dry_run:
-            r = subprocess.run(["atq"], capture_output=True, text=True)
-            pending = {line.split()[0] for line in r.stdout.splitlines()
-                       if line.strip()}
-        else:
-            pending = None  # unknown in dry-run; attempt anyway
-
-        for job_id in at_jobs:
-            if pending is not None and str(job_id) not in pending:
-                _info(f"{_I.CLOCK}  At job {job_id} already expired — skipping")
-                continue
-            _info(f"{_I.CLOCK}  Removing at job {job_id}")
-            self.run_cmd(["atrm", str(job_id)], check=False)
 
     # ── Containers ─────────────────────────────────────────────────────────
 
@@ -1537,9 +1323,6 @@ domain=INTERNAL
                     check=False,
                 )
 
-        if not self.dry_run:
-            self.stamp.save()
-
     # ── Non-RPM Software ──────────────────────────────────────────────────────
 
     def drift_nonrpm(self) -> None:
@@ -1558,8 +1341,6 @@ domain=INTERNAL
              "flask", "gunicorn", "requests"],
             check=False,
         )
-        if not self.dry_run:
-            self.stamp.record("recursive_dirs_created", venv_path)
 
         # Minimal: download yq as a real Go binary (gives yoinkc a
         # .note.go.buildid ELF section to detect)
@@ -1580,8 +1361,6 @@ domain=INTERNAL
                  "https://github.com/example/some-tool.git"],
                 check=False,
             )
-            if not self.dry_run:
-                self.stamp.record("recursive_dirs_created", git_dir)
 
             # Shell script at /usr/local/bin — non-binary script detection
             self._write_managed_text(
@@ -1612,12 +1391,8 @@ domain=INTERNAL
                 _shutil.copy2("/usr/bin/true", mystery)
                 os.chmod(mystery, 0o755)
                 self.run_cmd(["strip", mystery], check=False)
-                self.stamp.record("files_created", mystery)
             else:
                 _dry(f"cp /usr/bin/true {mystery} && strip {mystery}")
-
-        if not self.dry_run:
-            self.stamp.save()
 
     def _download_go_probe(self) -> None:
         """Download yq from GitHub releases as a real Go binary."""
@@ -1645,7 +1420,6 @@ domain=INTERNAL
         try:
             urllib.request.urlretrieve(url, dest)
             os.chmod(dest, 0o755)
-            self.stamp.record("files_created", dest)
             _info(f"  Go binary written to {dest}")
         except Exception as exc:
             _warn(f"yq download failed: {exc}")
@@ -1675,8 +1449,6 @@ domain=INTERNAL
             ["npm", "install", "--prefix", npm_dir, "--quiet"],
             check=False,
         )
-        if not self.dry_run:
-            self.stamp.record("recursive_dirs_created", npm_dir)
 
     # ── Kernel / Boot ──────────────────────────────────────────────────────
 
@@ -1725,9 +1497,6 @@ domain=INTERNAL
         if self.needs_profile("kitchen-sink"):
             self._append_kernel_cmdline_arg("panic=60 audit=1")
 
-        if not self.dry_run:
-            self.stamp.save()
-
     def _append_kernel_cmdline_arg(self, args: str) -> None:
         """Append args to GRUB_CMDLINE_LINUX in /etc/default/grub."""
         grub_path = "/etc/default/grub"
@@ -1766,8 +1535,6 @@ domain=INTERNAL
             ["setsebool", "-P", "httpd_can_network_connect", "on"],
             check=False,
         )
-        if not self.dry_run:
-            self.stamp.record("selinux_booleans", "httpd_can_network_connect")
 
         if self.needs_profile("standard"):
             _info(f"{_I.SHIELD}  Setting httpd_can_network_relay on")
@@ -1775,8 +1542,6 @@ domain=INTERNAL
                 ["setsebool", "-P", "httpd_can_network_relay", "on"],
                 check=False,
             )
-            if not self.dry_run:
-                self.stamp.record("selinux_booleans", "httpd_can_network_relay")
 
             # Custom audit rules
             self._ensure_dir(Path("/etc/audit/rules.d"))
@@ -1791,9 +1556,6 @@ domain=INTERNAL
 
         if self.needs_profile("kitchen-sink"):
             self._install_selinux_module()
-
-        if not self.dry_run:
-            self.stamp.save()
 
     def _install_selinux_module(self) -> None:
         """Compile and install a minimal custom SELinux policy module."""
@@ -1848,229 +1610,189 @@ domain=INTERNAL
                 _warn(f"semodule -i failed: {r.stderr.strip()}")
                 return
             _info(f"{_I.SHIELD}  Installed SELinux module: myapp")
-            self.stamp.record("selinux_modules", "myapp")
         finally:
             import shutil as _shutil
             _shutil.rmtree(td, ignore_errors=True)
 
-    # ── Undo: Kernel / Boot ────────────────────────────────────────────────
-
-    def _undo_kernel(self) -> None:
-        created = self.stamp.data.get("files_created", [])
-        # The sysctl and modules files are already removed by _undo_filesystem.
-        # Reapply remaining sysctl config so live values revert.
-        sysctl_removed = any("/sysctl.d/" in f for f in created)
-        modules_removed = any("/modules-load.d/" in f for f in created)
-        grub_modified = "/etc/default/grub" in self.stamp.data.get(
-            "file_backups", {}
-        )
-
-        if not (sysctl_removed or modules_removed or grub_modified):
-            return
-
-        _banner(f"{_I.UNDO}  Undo: Kernel / Boot")
-
-        if sysctl_removed:
-            _info(f"{_I.LINUX}  Reapplying remaining sysctls (reverting live values)")
-            self.run_cmd(["sysctl", "--system"], check=False)
-
-        if modules_removed:
-            _info(f"{_I.LINUX}  Attempting to unload br_netfilter")
-            self.run_cmd(["modprobe", "-r", "br_netfilter"], check=False)
-
-        if grub_modified:
-            _info(f"{_I.LINUX}  Regenerating grub.cfg after /etc/default/grub restore")
-            _GRUB_CFG_PATHS = [
-                "/boot/grub2/grub.cfg",
-                "/boot/efi/EFI/centos/grub.cfg",
-                "/boot/efi/EFI/redhat/grub.cfg",
-            ]
-            for cfg in _GRUB_CFG_PATHS:
-                if Path(cfg).exists():
-                    self.run_cmd(["grub2-mkconfig", "-o", cfg], check=False)
-                    break
-            else:
-                _warn("Could not locate grub.cfg — run grub2-mkconfig manually")
-
-    # ── Undo: SELinux / Security ───────────────────────────────────────────
-
-    def _undo_selinux(self) -> None:
-        d = self.stamp.data
-        booleans = d.get("selinux_booleans", [])
-        modules  = d.get("selinux_modules",  [])
-
-        if not (booleans or modules):
-            return
-
-        _banner(f"{_I.UNDO}  Undo: SELinux / Security")
-
-        for boolean in booleans:
-            _info(f"{_I.SHIELD}  Resetting {boolean} to off")
-            self.run_cmd(["setsebool", "-P", boolean, "off"], check=False)
-
-        for module in modules:
-            _info(f"{_I.SHIELD}  Removing SELinux module {module}")
-            self.run_cmd(["semodule", "-r", module], check=False)
-
-    # ── Undo: Users / Groups ───────────────────────────────────────────────
-
-    def _undo_users(self) -> None:
-        d = self.stamp.data
-        users = d.get("users_created", [])
-        groups = d.get("groups_created", [])
-
-        if not (users or groups):
-            return
-
-        _banner(f"{_I.UNDO}  Undo: Users / Groups")
-
-        # Delete users first (primary group can't be deleted while user exists)
-        for user in reversed(users):
-            _info(f"{_I.USERS}  Deleting user {user} (and home dir)")
-            self.run_cmd(["userdel", "-r", user], check=False)
-
-        for group in groups:
-            _info(f"{_I.USERS}  Deleting group {group}")
-            self.run_cmd(["groupdel", group], check=False)
-
-    # ── Undo: Services ────────────────────────────────────────────────────
-
-    def _undo_services(self) -> None:
-        d = self.stamp.data
-        enabled = d.get("services_enabled", [])
-        disabled = d.get("services_disabled", [])
-        masked = d.get("services_masked", [])
-
-        if not (enabled or disabled or masked):
-            return
-
-        _banner(f"{_I.UNDO}  Undo: Services")
-
-        for svc in enabled:
-            _info(f"{_I.BAN}  Disabling {svc}")
-            self.run_cmd(["systemctl", "disable", svc], check=False)
-
-        for svc in disabled:
-            _info(f"{_I.TOGGLE}  Re-enabling {svc}")
-            self.run_cmd(["systemctl", "enable", svc], check=False)
-
-        for svc in masked:
-            _info(f"{_I.MASK}  Unmasking {svc}")
-            self.run_cmd(["systemctl", "unmask", svc], check=False)
-
-    def _undo_network(self) -> None:
-        """Remove firewalld services/ports that were added."""
-        d = self.stamp.data
-        fw_services = d.get("firewall_services", [])
-        fw_ports = d.get("firewall_ports", [])
-
-        if not (fw_services or fw_ports):
-            return
-
-        _banner(f"{_I.UNDO}  Undo: Network (firewalld)")
-
-        for svc in fw_services:
-            _info(f"{_I.GLOBE}  Removing firewalld service {svc}")
-            self.run_cmd(["firewall-cmd", "--permanent", f"--remove-service={svc}"],
-                         check=False)
-        for port in fw_ports:
-            _info(f"{_I.GLOBE}  Removing firewalld port {port}")
-            self.run_cmd(["firewall-cmd", "--permanent", f"--remove-port={port}"],
-                         check=False)
-
-        self.run_cmd(["firewall-cmd", "--reload"], check=False)
-
-    def _undo_filesystem(self) -> None:
-        """Undo created files/dirs and restore original file contents."""
-        import shutil as _shutil
-        d = self.stamp.data
-        created_files = d.get("files_created", [])
-        created_dirs = d.get("dirs_created", [])
-        recursive_dirs = d.get("recursive_dirs_created", [])
-        backups = d.get("file_backups", {})
-
-        if not (created_files or created_dirs or recursive_dirs or backups):
-            return
-
-        _banner(f"{_I.UNDO}  Undo: Filesystem")
-
-        # Files in both created_files and file_backups were created by
-        # driftify and then modified by a later section.  The backup holds
-        # an intermediate driftify state, not the original state.  Only
-        # the delete is needed — skip the restore for these paths.
-        created_files_set = set(created_files)
-
-        for path_str in reversed(created_files):
-            path = Path(path_str)
-            if self.dry_run:
-                _dry(f"rm -f {path}")
-                continue
-            if path.exists():
-                path.unlink()
-                _info(f"Removed created file {path}")
-
-        for path_str, original in backups.items():
-            if path_str in created_files_set:
-                _info(f"Skipping restore of driftify-created file {path_str}")
-                continue
-            path = Path(path_str)
-            if self.dry_run:
-                _dry(f"restore file {path}")
-                continue
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as fh:
-                fh.write(original)
-            _info(f"Restored original file {path}")
-
-        for path_str in sorted(created_dirs, key=len, reverse=True):
-            path = Path(path_str)
-            if self.dry_run:
-                _dry(f"rmdir {path} (if empty)")
-                continue
-            if path.exists() and path.is_dir():
-                try:
-                    path.rmdir()
-                    _info(f"Removed created dir {path}")
-                except OSError:
-                    msg = f"Directory not empty, leaving {path}"
-                    _warn(msg)
-                    self._issues.append(msg)
-
-        # Recursively remove trees explicitly created by driftify
-        # (venvs, node_modules, git-init'd dirs, etc.)
-        for path_str in sorted(recursive_dirs, key=len, reverse=True):
-            path = Path(path_str)
-            if self.dry_run:
-                _dry(f"rm -rf {path}")
-                continue
-            if path.exists():
-                _shutil.rmtree(path)
-                _info(f"Removed created directory tree {path}")
-
-    # ── Undo: RPM ─────────────────────────────────────────────────────────
-
-    def _undo_rpm(self) -> None:
-        d = self.stamp.data
-        start_tid = d.get("dnf_transaction_start")
-        end_tid = d.get("dnf_transaction_end")
-
-        if start_tid is None or end_tid is None:
-            _warn("No dnf transaction range in stamp — skipping RPM undo")
-            return
-
-        if end_tid <= start_tid:
-            _info("No dnf transactions to undo")
-            return
-
-        _banner(f"{_I.UNDO}  Undo: RPM / Packages")
-        _info(f"{_I.PACKAGE}  Reverting dnf transactions "
-              f"{start_tid + 1}..{end_tid}")
-
-        for tid in range(end_tid, start_tid, -1):
-            _info(f"{_I.RECYCLE}  Undoing dnf transaction {tid}")
-            self.run_cmd(["dnf", "history", "undo", "-y", str(tid)], check=False)
-
     # ── Summary ───────────────────────────────────────────────────────────
+
+    def _launch_yoinkc(self) -> None:
+        """Download run-yoinkc.sh from the yoinkc repo and execute it."""
+        import urllib.request
+        import tempfile
+        import stat
+
+        _banner(f"{_I.ROCKET}  Launching yoinkc")
+        _info(f"{_I.DOWNLOAD}  Script: {self._YOINKC_SCRIPT_URL}")
+        _info(f"{_I.DATABASE}  Output: {self.yoinkc_output}")
+
+        if self.dry_run:
+            _dry(f"curl {self._YOINKC_SCRIPT_URL} | sh -s -- {self.yoinkc_output}")
+            return
+
+        script_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".sh", delete=False, mode="w"
+            ) as tf:
+                script_path = tf.name
+            urllib.request.urlretrieve(self._YOINKC_SCRIPT_URL, script_path)
+            os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
+            self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
+        except Exception as exc:
+            _warn(f"Could not launch yoinkc: {exc}")
+        finally:
+            if script_path:
+                try:
+                    os.unlink(script_path)
+                except OSError:
+                    pass
+
+    def _print_summary(self) -> None:
+        elapsed = time.monotonic() - self._t0
+        m, s = divmod(int(elapsed), 60)
+
+        _banner(f"{_I.CHECK}  driftify complete "
+                f"({self.profile} profile, {m}m {s:02d}s)")
+
+        def _sec(section, parts):
+            return "skipped" if section in self.skip else ", ".join(parts)
+
+        # ── RPM ──────────────────────────────────────────────────────────────
+        pkg_count = sum(len(BASE_PACKAGES.get(l, [])) for l in PROFILES if self.needs_profile(l))
+        epel_count = sum(len(EPEL_PACKAGES.get(l, [])) for l in PROFILES if self.needs_profile(l))
+        if "rpm" not in self.skip:
+            rpm_parts = [f"{pkg_count + epel_count} packages requested", "1 repo added"]
+            if self.needs_profile("standard"):
+                rpm_parts += ["1 ghost package", "1 orphaned config"]
+            rpm_str = ", ".join(rpm_parts)
+        else:
+            rpm_str = "skipped"
+        _info(f"{SECTION_ICONS['rpm']}  RPM:        {rpm_str}")
+
+        # ── Services ─────────────────────────────────────────────────────────
+        if "services" not in self.skip:
+            svc = ["2 enabled", "1 disabled"]
+            if self.needs_profile("standard"):
+                svc.append("1 masked (if present)")
+            svc_str = ", ".join(svc)
+        else:
+            svc_str = "skipped"
+        _info(f"{SECTION_ICONS['services']}  Services:   {svc_str}")
+
+        # ── Config ───────────────────────────────────────────────────────────
+        _info(f"{SECTION_ICONS['config']}  Config:     {_sec('config', ['RPM + unowned config drift applied'])}")
+
+        # ── Network ──────────────────────────────────────────────────────────
+        if "network" not in self.skip:
+            net = ["3 firewall rules", "hosts entries"]
+            if self.needs_profile("standard"):
+                net += ["zone", "NM profile", "proxy"]
+            net_str = ", ".join(net)
+        else:
+            net_str = "skipped"
+        _info(f"{SECTION_ICONS['network']}  Network:    {net_str}")
+
+        # ── Storage ──────────────────────────────────────────────────────────
+        if "storage" not in self.skip:
+            sto = ["/var dirs"]
+            if self.needs_profile("standard"):
+                sto.append("fstab entries")
+            sto_str = ", ".join(sto)
+        else:
+            sto_str = "skipped"
+        _info(f"{SECTION_ICONS['storage']}  Storage:    {sto_str}")
+
+        # ── Scheduled ────────────────────────────────────────────────────────
+        if "scheduled" not in self.skip:
+            sch = ["2 cron files"]
+            if self.needs_profile("standard"):
+                sch += ["1 timer", "1 at job", "1 per-user crontab"]
+            if self.needs_profile("kitchen-sink"):
+                sch.append("1 complex cron")
+            sch_str = ", ".join(sch)
+        else:
+            sch_str = "skipped"
+        _info(f"{SECTION_ICONS['scheduled']}  Scheduled:  {sch_str}")
+
+        # ── Containers ───────────────────────────────────────────────────────
+        if "containers" not in self.skip:
+            ctr = ["webapp.container"]
+            if self.needs_profile("standard"):
+                ctr += ["redis.container", "myapp.network", "docker-compose.yml"]
+            if self.needs_profile("kitchen-sink"):
+                ctr.append("user-level quadlet")
+            ctr_str = ", ".join(ctr)
+        else:
+            ctr_str = "skipped"
+        _info(f"{SECTION_ICONS['containers']}  Containers: {ctr_str}")
+
+        # ── Non-RPM ──────────────────────────────────────────────────────────
+        if "nonrpm" not in self.skip:
+            nrpm = ["Python venv", "Go binary (yq)"]
+            if self.needs_profile("standard"):
+                nrpm += ["npm project", "git repo", "deploy.sh"]
+            if self.needs_profile("kitchen-sink"):
+                nrpm.append("mystery binary")
+            nrpm_str = ", ".join(nrpm)
+        else:
+            nrpm_str = "skipped"
+        _info(f"{SECTION_ICONS['nonrpm']}  Non-RPM:    {nrpm_str}")
+
+        # ── Kernel ───────────────────────────────────────────────────────────
+        if "kernel" not in self.skip:
+            ker = ["6 sysctl values applied"]
+            if self.needs_profile("standard"):
+                ker += ["br_netfilter loaded", "dracut config"]
+            if self.needs_profile("kitchen-sink"):
+                ker.append("grub args")
+            ker_str = ", ".join(ker)
+        else:
+            ker_str = "skipped"
+        _info(f"{SECTION_ICONS['kernel']}  Kernel:     {ker_str}")
+
+        # ── SELinux ──────────────────────────────────────────────────────────
+        if "selinux" not in self.skip:
+            nb = 1 + (1 if self.needs_profile("standard") else 0)
+            nm = 1 if self.needs_profile("kitchen-sink") else 0
+            sel = [f"{nb} boolean(s) set"]
+            if self.needs_profile("standard"):
+                sel.append("audit rules")
+            if nm:
+                sel.append(f"{nm} policy module(s)")
+            sel_str = ", ".join(sel)
+        else:
+            sel_str = "skipped"
+        _info(f"{SECTION_ICONS['selinux']}  SELinux:    {sel_str}")
+
+        # ── Users ────────────────────────────────────────────────────────────
+        if "users" not in self.skip:
+            usr_n = 1 + (1 if self.needs_profile("standard") else 0)
+            usr = [f"{usr_n} user(s)", "1 group"]
+            if self.needs_profile("standard"):
+                usr += ["sudoers rule", "SSH key"]
+            usr_str = ", ".join(usr)
+        else:
+            usr_str = "skipped"
+        _info(f"{SECTION_ICONS['users']}  Users:      {usr_str}")
+
+        # ── Secrets ──────────────────────────────────────────────────────────
+        _info(f"{SECTION_ICONS['secrets']}  Secrets:    {_sec('secrets', ['fake secrets planted'])}")
+
+        # Placeholder lines for future sections
+        for section in SECTIONS:
+            if section in self._IMPLEMENTED:
+                continue
+            _skip(f"{SECTION_ICONS[section]}  {SECTION_LABELS[section]}: not yet implemented")
+
+        print()
+        _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
+        if not self.run_yoinkc:
+            _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
+            _info(f"             or: curl -fsSL "
+                  f"https://raw.githubusercontent.com/marrusl/yoinkc/main/"
+                  f"run-yoinkc.sh | sh")
+
 
     def _launch_yoinkc(self) -> None:
         """Download run-yoinkc.sh from the yoinkc repo and execute it."""
@@ -2340,7 +2062,6 @@ domain=INTERNAL
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
-        _info(f"{_I.UNDO}  To undo:    sudo ./driftify.py --undo")
         if not self.run_yoinkc:
             _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
             _info(f"             or: curl -fsSL "
@@ -2363,7 +2084,6 @@ examples:
   sudo ./driftify.py --profile minimal        # CI-friendly, fast
   sudo ./driftify.py --profile kitchen-sink   # everything
   sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
-  sudo ./driftify.py --undo                   # reverse previous run
   sudo ./driftify.py --dry-run                # preview without changes
 """,
     )
@@ -2378,10 +2098,6 @@ examples:
             action="store_true",
             help=f"skip the {section} section",
         )
-    p.add_argument(
-        "--undo", action="store_true",
-        help="reverse all modifications from the previous run (requires stamp file)",
-    )
     p.add_argument(
         "--dry-run", action="store_true",
         help="print commands without executing them",
@@ -2428,7 +2144,6 @@ def main() -> None:
         profile=args.profile,
         dry_run=args.dry_run,
         skip_sections=skipped,
-        undo=args.undo,
         yes=args.yes,
         quiet=args.quiet,
         verbose=args.verbose,
@@ -2436,10 +2151,7 @@ def main() -> None:
         yoinkc_output=args.yoinkc_output,
     )
 
-    if args.undo:
-        drifter.run_undo()
-    else:
-        drifter.run()
+    drifter.run()
 
 
 if __name__ == "__main__":

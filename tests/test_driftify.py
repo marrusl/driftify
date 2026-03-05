@@ -61,49 +61,19 @@ class TestProfileAndSkipLogic(DriftifyTestCase):
 
 
 class TestStampFile(DriftifyTestCase):
-    def test_stamp_round_trip_and_record(self):
+    def test_stamp_round_trip(self):
         with tempfile.TemporaryDirectory() as td:
             stamp_path = Path(td) / "driftify.stamp"
             sf = driftify.StampFile(stamp_path)
             sf.start("standard", "centos", 9)
-            sf.record("services_enabled", "httpd")
-            sf.record("services_enabled", "nginx")
-            sf.record("services_enabled", "httpd")
-            sf.record("dnf_transaction_start", 42)
-            sf.save()
             sf.finish()
-
-            sf2 = driftify.StampFile(stamp_path)
-            loaded = sf2.load()
-
+            with open(stamp_path) as fh:
+                loaded = json.load(fh)
             self.assertEqual(loaded["profile"], "standard")
             self.assertEqual(loaded["os_major"], 9)
-            self.assertEqual(loaded["services_enabled"], ["httpd", "nginx"])
-            self.assertEqual(loaded["dnf_transaction_start"], 42)
             self.assertIsNotNone(loaded["finished"])
+            self.assertNotIn("services_enabled", loaded)
 
-    def test_record_does_not_auto_save(self):
-        with tempfile.TemporaryDirectory() as td:
-            stamp_path = Path(td) / "driftify.stamp"
-            sf = driftify.StampFile(stamp_path)
-            sf.start("minimal", "rhel", 9)
-            sf.record("services_enabled", "httpd")
-
-            sf2 = driftify.StampFile(stamp_path)
-            sf2.load()
-            self.assertEqual(sf2.data["services_enabled"], [])
-
-            sf.save()
-            sf2.load()
-            self.assertEqual(sf2.data["services_enabled"], ["httpd"])
-
-    def test_stamp_has_firewall_fields(self):
-        with tempfile.TemporaryDirectory() as td:
-            sf = driftify.StampFile(Path(td) / "stamp.json")
-            sf.start("standard", "centos", 9)
-            self.assertIn("firewall_services", sf.data)
-            self.assertIn("firewall_ports", sf.data)
-            self.assertEqual(sf.data["firewall_services"], [])
 
 
 class TestHelpersAndDryRun(DriftifyTestCase):
@@ -113,18 +83,16 @@ class TestHelpersAndDryRun(DriftifyTestCase):
         d.stamp.start(d.profile, d.os_id, d.os_major)
         return d
 
-    def test_write_managed_text_tracks_created_and_backup(self):
+    def test_write_managed_text_creates_and_updates(self):
         with tempfile.TemporaryDirectory() as td:
             d = self._build_non_dry_with_temp_stamp(td)
             file_path = Path(td) / "cfg.txt"
 
             d._write_managed_text(str(file_path), "one\n")
             self.assertTrue(file_path.exists())
-            self.assertIn(str(file_path), d.stamp.data["files_created"])
+            self.assertEqual(file_path.read_text(), "one\n")
 
             d._write_managed_text(str(file_path), "two\n")
-            backups = d.stamp.data.get("file_backups", {})
-            self.assertEqual(backups[str(file_path)], "one\n")
             self.assertEqual(file_path.read_text(), "two\n")
 
     def test_append_managed_block_is_idempotent(self):
@@ -467,47 +435,7 @@ class TestConfirmation(DriftifyTestCase):
 
 
 class TestSummary(DriftifyTestCase):
-    def test_summary_services_uses_stamp_data(self):
-        """Summary shows actual service counts from stamp, not hardcoded estimates."""
-        with tempfile.TemporaryDirectory() as td:
-            driftify.STAMP_PATH = Path(td) / "stamp.json"
-            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
-            d.stamp.start(d.profile, d.os_id, d.os_major)
-            # Simulate only 1 service enabled (not the usual 2)
-            d.stamp.record("services_enabled", "httpd")
-            d.stamp.record("services_disabled", "kdump")
-            d.stamp.record("services_masked", "bluetooth")
-            d.stamp.save()
-            d._t0 = __import__("time").monotonic()
 
-            self._suppress.__exit__(None, None, None)
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                d._print_summary()
-            self._suppress.__enter__()
-            output = buf.getvalue()
-            self.assertIn("1 enabled", output)
-            self.assertIn("1 disabled", output)
-            self.assertIn("1 masked", output)
-
-    def test_summary_network_uses_stamp_data(self):
-        """Summary shows actual firewall rule counts from stamp."""
-        with tempfile.TemporaryDirectory() as td:
-            driftify.STAMP_PATH = Path(td) / "stamp.json"
-            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
-            d.stamp.start(d.profile, d.os_id, d.os_major)
-            d.stamp.record("firewall_services", "http")
-            d.stamp.record("firewall_ports", "8080/tcp")
-            d.stamp.save()
-            d._t0 = __import__("time").monotonic()
-
-            self._suppress.__exit__(None, None, None)
-            buf = io.StringIO()
-            with redirect_stdout(buf):
-                d._print_summary()
-            self._suppress.__enter__()
-            output = buf.getvalue()
-            self.assertIn("2 firewall rules", output)
 
     def test_summary_rpm_mentions_orphaned_config(self):
         """RPM summary line mentions orphaned config for standard+."""
@@ -556,35 +484,7 @@ class TestScheduled(DriftifyTestCase):
         self._suppress.__enter__()
         self.assertIn("/etc/cron.d/complex-job", buf.getvalue())
 
-    def test_stamp_has_at_jobs_field(self):
-        with tempfile.TemporaryDirectory() as td:
-            sf = driftify.StampFile(Path(td) / "stamp.json")
-            sf.start("standard", "centos", 9)
-            self.assertIn("at_jobs", sf.data)
-            self.assertEqual(sf.data["at_jobs"], [])
 
-    def test_undo_scheduled_removes_at_jobs(self):
-        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {"at_jobs": [3, 7]}
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_scheduled()
-        self._suppress.__enter__()
-        output = buf.getvalue()
-        self.assertIn("atrm 3", output)
-        self.assertIn("atrm 7", output)
-
-    def test_undo_scheduled_noop_when_no_jobs(self):
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {"at_jobs": []}
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_scheduled()
-        self._suppress.__enter__()
-        self.assertEqual(buf.getvalue(), "")
 
 
 class TestUsers(DriftifyTestCase):
@@ -611,36 +511,6 @@ class TestUsers(DriftifyTestCase):
         self.assertIn("/etc/sudoers.d/appusers", output)
         self.assertIn("/home/appuser/.ssh/authorized_keys", output)
 
-    def test_undo_users_disables_users_then_groups(self):
-        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {
-            "users_created": ["appuser", "dbuser"],
-            "groups_created": ["appgroup"],
-        }
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_users()
-        self._suppress.__enter__()
-        output = buf.getvalue()
-        self.assertIn("userdel", output)
-        self.assertIn("appuser", output)
-        self.assertIn("dbuser", output)
-        self.assertIn("groupdel", output)
-        self.assertIn("appgroup", output)
-        # Users must come before groups in output
-        self.assertLess(output.index("userdel"), output.index("groupdel"))
-
-    def test_undo_users_noop_when_empty(self):
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {"users_created": [], "groups_created": []}
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_users()
-        self._suppress.__enter__()
-        self.assertEqual(buf.getvalue(), "")
 
 
 class TestNonRpm(DriftifyTestCase):
@@ -690,42 +560,6 @@ class TestNonRpm(DriftifyTestCase):
             d.drift_nonrpm()
         self._suppress.__enter__()
         self.assertNotIn("/opt/myapp/venv", buf.getvalue())
-
-    def test_stamp_has_recursive_dirs_field(self):
-        with tempfile.TemporaryDirectory() as td:
-            sf = driftify.StampFile(Path(td) / "stamp.json")
-            sf.start("standard", "centos", 9)
-            self.assertIn("recursive_dirs_created", sf.data)
-            self.assertEqual(sf.data["recursive_dirs_created"], [])
-
-    def test_recursive_dirs_tracked_on_live_run(self):
-        with tempfile.TemporaryDirectory() as td:
-            driftify.STAMP_PATH = Path(td) / "stamp.json"
-            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
-            d.stamp.start(d.profile, d.os_id, d.os_major)
-            d.stamp.record("recursive_dirs_created", "/opt/myapp/venv")
-            d.stamp.save()
-            sf2 = driftify.StampFile(driftify.STAMP_PATH)
-            sf2.load()
-            self.assertIn("/opt/myapp/venv", sf2.data["recursive_dirs_created"])
-
-    def test_undo_filesystem_recursively_removes_nonrpm_dirs(self):
-        with tempfile.TemporaryDirectory() as td:
-            venv_like = Path(td) / "venv"
-            venv_like.mkdir()
-            (venv_like / "bin").mkdir()
-            (venv_like / "bin" / "python3").write_text("stub")
-
-            driftify.STAMP_PATH = Path(td) / "stamp.json"
-            d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
-            d.stamp.data = {
-                "files_created": [],
-                "dirs_created": [],
-                "recursive_dirs_created": [str(venv_like)],
-                "file_backups": {},
-            }
-            d._undo_filesystem()
-            self.assertFalse(venv_like.exists())
 
     def test_deploy_sh_content(self):
         with tempfile.TemporaryDirectory() as td:
@@ -948,20 +782,6 @@ class TestKernel(DriftifyTestCase):
             grub.write_text(new)
             self.assertIn("panic=60 audit=1", grub.read_text())
 
-    def test_undo_kernel_reapplies_sysctl(self):
-        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {
-            "files_created": ["/etc/sysctl.d/99-driftify.conf"],
-            "file_backups": {},
-        }
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_kernel()
-        self._suppress.__enter__()
-        self.assertIn("sysctl --system", buf.getvalue())
-
 
 class TestSELinux(DriftifyTestCase):
     def test_selinux_minimal_dry_run_sets_boolean(self):
@@ -987,197 +807,4 @@ class TestSELinux(DriftifyTestCase):
         self.assertIn("httpd_can_network_relay", output)
         self.assertIn("/etc/audit/rules.d/driftify.rules", output)
 
-    def test_undo_selinux_resets_booleans_and_removes_modules(self):
-        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {
-            "selinux_booleans": ["httpd_can_network_connect", "httpd_can_network_relay"],
-            "selinux_modules": ["myapp"],
-        }
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_selinux()
-        self._suppress.__enter__()
-        output = buf.getvalue()
-        self.assertIn("setsebool -P httpd_can_network_connect off", output)
-        self.assertIn("setsebool -P httpd_can_network_relay off", output)
-        self.assertIn("semodule -r myapp", output)
 
-    def test_undo_selinux_noop_when_empty(self):
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {"selinux_booleans": [], "selinux_modules": []}
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_selinux()
-        self._suppress.__enter__()
-        self.assertEqual(buf.getvalue(), "")
-
-
-class TestUndoFilesystem(DriftifyTestCase):
-    def test_undo_filesystem_restores_and_removes(self):
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            created = base / "created.txt"
-            created.write_text("new\n")
-            changed = base / "changed.txt"
-            changed.write_text("mutated\n")
-
-            driftify.STAMP_PATH = base / "stamp.json"
-            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
-            d.stamp.data = {
-                "files_created": [str(created)],
-                "dirs_created": [],
-                "file_backups": {str(changed): "original\n"},
-                "firewall_services": [],
-                "firewall_ports": [],
-            }
-            d._undo_filesystem()
-
-            self.assertFalse(created.exists())
-            self.assertEqual(changed.read_text(), "original\n")
-
-    def test_undo_filesystem_does_not_restore_driftify_created_files(self):
-        """Files in both files_created and file_backups should be deleted only.
-
-        This covers the case where drift_config creates a file and drift_secrets
-        later modifies it — the backup holds an intermediate driftify state, not
-        the pre-driftify state, so the file should just be removed on undo.
-        """
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            # Simulate: driftify created this file, then modified it
-            app_conf = base / "app.conf"
-            app_conf.write_text("[app]\nname=driftify\n# BEGIN DRIFTIFY secrets\n")
-
-            driftify.STAMP_PATH = base / "stamp.json"
-            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
-            d.stamp.data = {
-                "files_created": [str(app_conf)],
-                "dirs_created": [],
-                # Backup was written when secrets section modified it —
-                # contains intermediate content, not original empty state
-                "file_backups": {str(app_conf): "[app]\nname=driftify\n"},
-            }
-            d._undo_filesystem()
-
-            # File must be gone — NOT restored from backup
-            self.assertFalse(app_conf.exists())
-
-    def test_undo_filesystem_removes_created_dirs(self):
-        with tempfile.TemporaryDirectory() as td:
-            base = Path(td)
-            subdir = base / "myapp"
-            subdir.mkdir()
-
-            driftify.STAMP_PATH = base / "stamp.json"
-            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
-            d.stamp.data = {
-                "files_created": [],
-                "dirs_created": [str(subdir)],
-                "file_backups": {},
-            }
-            d._undo_filesystem()
-
-            self.assertFalse(subdir.exists())
-
-
-class TestUndoIssueSummary(DriftifyTestCase):
-    def test_run_cmd_records_failure_in_undo_mode(self):
-        d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
-                              undo=True)
-        mock_result = unittest.mock.MagicMock()
-        mock_result.returncode = 1
-        with unittest.mock.patch("subprocess.run", return_value=mock_result):
-            self._suppress.__exit__(None, None, None)
-            with redirect_stdout(io.StringIO()):
-                d.run_cmd(["failing-cmd"], check=False)
-            self._suppress.__enter__()
-        self.assertEqual(len(d._issues), 1)
-        self.assertIn("exited 1", d._issues[0])
-
-    def test_run_cmd_does_not_record_failure_outside_undo(self):
-        d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
-                              undo=False)
-        mock_result = unittest.mock.MagicMock()
-        mock_result.returncode = 1
-        with unittest.mock.patch("subprocess.run", return_value=mock_result):
-            self._suppress.__exit__(None, None, None)
-            with redirect_stdout(io.StringIO()):
-                d.run_cmd(["failing-cmd"], check=False)
-            self._suppress.__enter__()
-        self.assertEqual(len(d._issues), 0)
-
-    def test_undo_filesystem_records_nonempty_dir(self):
-        with tempfile.TemporaryDirectory() as td:
-            nonempty = Path(td) / "nonempty"
-            nonempty.mkdir()
-            (nonempty / "file.txt").write_text("contents")
-
-            driftify.STAMP_PATH = Path(td) / "stamp.json"
-            d = driftify.Driftify("standard", dry_run=False, skip_sections=[],
-                                  undo=True)
-            d.stamp.data = {
-                "files_created": [], "dirs_created": [str(nonempty)],
-                "recursive_dirs_created": [], "file_backups": {},
-            }
-            self._suppress.__exit__(None, None, None)
-            with redirect_stdout(io.StringIO()):
-                d._undo_filesystem()
-            self._suppress.__enter__()
-            self.assertEqual(len(d._issues), 1)
-            self.assertIn("not empty", d._issues[0])
-
-    def test_issues_list_initialises_empty(self):
-        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
-        self.assertEqual(d._issues, [])
-
-    def test_issues_list_is_printed_when_populated(self):
-        """Populated _issues are surfaced via _warn calls."""
-        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[],
-                              undo=True)
-        d._issues = ["exited 1: some-cmd", "Directory not empty, leaving /x"]
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            for issue in d._issues:
-                driftify._warn(f"  • {issue}")
-        self._suppress.__enter__()
-        output = buf.getvalue()
-        self.assertIn("some-cmd", output)
-        self.assertIn("not empty", output)
-
-
-class TestUndoNetwork(DriftifyTestCase):
-    def test_undo_network_dry_run_output(self):
-        driftify.STAMP_PATH = Path("/tmp/test-stamp.json")
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {
-            "firewall_services": ["http", "https"],
-            "firewall_ports": ["8080/tcp"],
-        }
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_network()
-        self._suppress.__enter__()
-        output = buf.getvalue()
-        self.assertIn("--remove-service=http", output)
-        self.assertIn("--remove-service=https", output)
-        self.assertIn("--remove-port=8080/tcp", output)
-        self.assertIn("--reload", output)
-
-    def test_undo_network_noop_when_empty(self):
-        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
-        d.stamp.data = {"firewall_services": [], "firewall_ports": []}
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            d._undo_network()
-        self._suppress.__enter__()
-        self.assertNotIn("firewalld", buf.getvalue())
-
-
-if __name__ == "__main__":
-    unittest.main()

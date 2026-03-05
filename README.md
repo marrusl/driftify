@@ -24,7 +24,6 @@ sudo ./driftify.py -q                       # quiet output
 sudo ./driftify.py --profile minimal        # CI-friendly, fast
 sudo ./driftify.py --profile kitchen-sink   # everything
 sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
-sudo ./driftify.py --undo                   # reverse previous run
 sudo ./driftify.py --dry-run                # preview without changes
 sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
 ```
@@ -35,7 +34,6 @@ sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
 |------|-------------|
 | `--profile PROFILE` | `minimal`, `standard` (default), or `kitchen-sink` |
 | `--skip-SECTION` | Skip a section (e.g. `--skip-rpm`, `--skip-services`, `--skip-nonrpm`) |
-| `--undo` | Reverse all modifications from the previous run (requires stamp file) |
 | `--dry-run` | Print commands without executing them |
 | `-y`, `--yes` | Skip interactive confirmation prompt |
 | `-q`, `--quiet` | Show only section banners, warnings, and errors |
@@ -83,7 +81,7 @@ Each section maps to a yoinkc inspector:
 - 🎚️ **Profiles** → minimal for CI, standard for demos, kitchen-sink for stress testing.
 - ⏭️ **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
 - 👁️ **Dry-run mode** → `--dry-run` prints every command without executing anything.
-- ↩️ **Undo support** → `--undo` reverses all modifications using a JSON stamp file at `/etc/driftify.stamp`. Stamp tracks dnf transaction IDs, created files, enabled services, SELinux booleans, and more.
+- 📋 **Run record** → writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps — useful for auditing and `--run-yoinkc` context.
 - 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
 - ♻️ **Idempotent** → safe to run twice without breaking the system.
 - 🔑 **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
