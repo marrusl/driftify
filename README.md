@@ -83,7 +83,7 @@ Each section maps to a yoinkc inspector:
 - ⏭️ **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
 - 👁️ **Dry-run mode** → `--dry-run` prints every command without executing anything.
 - 📋 **Run record** → writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps — useful for auditing and `--run-yoinkc` context.
-- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9, EL10, and Fedora.
+- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
 - ♻️ **Idempotent** → safe to run twice without breaking the system.
 - 🔑 **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
 - 🎨 **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
