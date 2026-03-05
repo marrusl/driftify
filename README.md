@@ -4,13 +4,14 @@ Apply synthetic drift to a fresh RHEL, CentOS Stream, or Fedora system so that [
 
 driftify is the fixture half of the yoinkc development workflow: run driftify on a clean host, then run yoinkc, and every inspector lights up with real findings — packages, configs, services, containers, secrets, the works.
 
+> **Intended use:** driftify is designed to run on throwaway VMs that exist solely to exercise yoinkc. It makes significant system-wide changes and provides no cleanup mechanism. Use VM snapshots to restore prior state.
+
 ## Quick start
 
 ```bash
 curl -LO https://raw.githubusercontent.com/marrusl/driftify/main/driftify.py
 chmod +x driftify.py
 sudo ./driftify.py                    # standard profile
-sudo ./driftify.py --undo             # reverse everything
 ```
 
 No dependencies beyond Python 3 (ships on every RHEL, CentOS Stream, and Fedora minimal install).
@@ -82,7 +83,7 @@ Each section maps to a yoinkc inspector:
 - ⏭️ **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
 - 👁️ **Dry-run mode** → `--dry-run` prints every command without executing anything.
 - 📋 **Run record** → writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps — useful for auditing and `--run-yoinkc` context.
-- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
+- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9, EL10, and Fedora.
 - ♻️ **Idempotent** → safe to run twice without breaking the system.
 - 🔑 **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
 - 🎨 **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
@@ -115,4 +116,4 @@ python3 -m unittest discover -s tests -v
 | CentOS Stream 10 | ✅ Tested |
 | RHEL 9.6+ | ✅ Tested |
 | RHEL 10 | ✅ Tested |
-| Fedora | ✅ Tested (EPEL skipped; packages available natively) |
+| Fedora | ✅ Tested |
