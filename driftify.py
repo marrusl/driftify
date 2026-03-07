@@ -476,7 +476,7 @@ class Driftify:
         if "scheduled" in active:
             sch = "Create cron jobs (/etc/cron.d, /etc/cron.daily)"
             if self.needs_profile("standard"):
-                sch += ", systemd timer pair, at job, per-user crontab"
+                sch += ", /etc/crontab entry, systemd timer pair, at job, per-user crontab"
             lines.append(sch)
 
         if "nonrpm" in active:
@@ -500,9 +500,9 @@ class Driftify:
         if "kernel" in active:
             ker = "Apply 6 sysctl overrides (/etc/sysctl.d/99-driftify.conf)"
             if self.needs_profile("standard"):
-                ker += ", load br_netfilter, dracut config"
+                ker += ", load br_netfilter, modprobe.d options, dracut config, grub audit=1"
             if self.needs_profile("kitchen-sink"):
-                ker += ", add grub kernel args (panic=60 audit=1)"
+                ker += " + panic=60"
             lines.append(ker)
 
         if "selinux" in active:
@@ -1081,6 +1081,15 @@ domain=INTERNAL
         )
 
         if self.needs_profile("standard"):
+            # System crontab entry — exercises yoinkc's /etc/crontab parsing
+            # path (distinct from /etc/cron.d/ which is covered at minimal)
+            self._append_managed_block(
+                "/etc/crontab",
+                "logrotate",
+                "30 2 * * * root /usr/bin/logrotate /etc/logrotate.conf",
+                create_if_missing=False,
+            )
+
             # Per-user crontab written directly to spool dir
             # appuser is created later in drift_users; crond picks it up then
             self._write_managed_text(
@@ -1514,6 +1523,15 @@ domain=INTERNAL
             _info(f"{_I.LINUX}  Loading br_netfilter")
             self.run_cmd(["modprobe", "br_netfilter"], check=False)
 
+            # modprobe.d options — persistent per-module parameter;
+            # exercises yoinkc's modprobe.d config capture path
+            self._write_managed_text(
+                "/etc/modprobe.d/driftify.conf",
+                "# Module parameters — driftify synthetic fixture\n"
+                "# yoinkc should detect this as a persistent modprobe.d config\n"
+                "options br_netfilter nf_conntrack_max=131072\n",
+            )
+
             # Dracut config
             self._write_managed_text(
                 "/etc/dracut.conf.d/driftify.conf",
@@ -1521,6 +1539,11 @@ domain=INTERNAL
                 'add_drivers+=" overlay "\n'
                 'compress="gzip"\n',
             )
+
+            # GRUB hardening — add audit=1 at standard profile so yoinkc's
+            # GRUB defaults detection fires without requiring kitchen-sink
+            if not self.needs_profile("kitchen-sink"):
+                self._append_kernel_cmdline_arg("audit=1")
 
         if self.needs_profile("kitchen-sink"):
             self._append_kernel_cmdline_arg("panic=60 audit=1")
@@ -1801,7 +1824,7 @@ domain=INTERNAL
             else:
                 sch_parts = ["2 cron files"]
                 if self.needs_profile("standard"):
-                    sch_parts += ["1 timer", "1 at job", "1 per-user crontab"]
+                    sch_parts += ["1 crontab entry", "1 timer", "1 at job", "1 per-user crontab"]
                 sch_str = ", ".join(sch_parts)
         else:
             sch_str = "skipped"
@@ -1849,6 +1872,7 @@ domain=INTERNAL
             if d:
                 ker_files = (self._count_created("/etc/sysctl.d/") +
                              self._count_created("/etc/modules-load.d/") +
+                             self._count_created("/etc/modprobe.d/") +
                              self._count_created("/etc/dracut.conf.d/"))
                 grub_mod  = "/etc/default/grub" in d.get("file_backups", {})
                 ker_parts = ["sysctl applied live"]
@@ -1858,9 +1882,8 @@ domain=INTERNAL
             else:
                 ker_parts = ["6 sysctl values applied"]
                 if self.needs_profile("standard"):
-                    ker_parts += ["br_netfilter loaded", "dracut config"]
-                if self.needs_profile("kitchen-sink"):
-                    ker_parts.append("grub args")
+                    ker_parts += ["br_netfilter loaded", "modprobe.d config",
+                                  "dracut config", "grub audit=1"]
                 ker_str = ", ".join(ker_parts)
         else:
             ker_str = "skipped"
