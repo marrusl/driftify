@@ -1687,10 +1687,43 @@ domain=INTERNAL
                 script_path = tf.name
             urllib.request.urlretrieve(self._YOINKC_SCRIPT_URL, script_path)
             os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
-            result = self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
-            
-            # Check if yoinkc succeeded (exit code 0) and produced a tarball
-            if result and result.returncode == 0:
+            # Stream stdout+stderr live so the user sees container progress,
+            # but accumulate the output so we can check it on failure.
+            if not self.quiet:
+                _info(f"Running: sh {script_path} {self.yoinkc_output}")
+            proc = subprocess.Popen(
+                ["sh", script_path, self.yoinkc_output],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            captured_lines: list[str] = []
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if not self.quiet:
+                    print(line, end="", flush=True)
+                captured_lines.append(line)
+            proc.wait()
+            captured = "".join(captured_lines)
+
+            if proc.returncode != 0:
+                # In quiet mode the output was suppressed above — replay it now
+                # so the user can see what went wrong.
+                if self.quiet and captured:
+                    print(captured, end="")
+                _warn(f"yoinkc failed with exit code {proc.returncode}")
+                _AUTH_PATTERNS = (
+                    "unauthorized",
+                    "authentication required",
+                    "login",
+                    "registry.redhat.io",
+                )
+                if any(p in captured.lower() for p in _AUTH_PATTERNS):
+                    _warn(
+                        "Hint: run 'sudo podman login registry.redhat.io'"
+                        " before using --run-yoinkc on RHEL hosts."
+                    )
+            else:
                 output_path = Path(self.yoinkc_output).resolve()
                 parent_path = output_path.parent
                 tarballs = list(parent_path.glob("*.tar.gz"))
@@ -1698,10 +1731,6 @@ domain=INTERNAL
                     self._print_next_steps()
                 else:
                     _warn(f"yoinkc completed but no tarball found in {parent_path}")
-            elif result:
-                _warn(f"yoinkc failed with exit code {result.returncode}")
-            else:
-                _warn("yoinkc subprocess did not complete normally")
         except Exception as exc:
             _warn(f"Could not launch yoinkc: {exc}")
         finally:
