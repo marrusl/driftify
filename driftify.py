@@ -451,6 +451,12 @@ class Driftify:
                 cfgs += ", limits, auditd"
             cfgs += ") + drop /etc/myapp/ configs"
             lines.append(cfgs)
+            if self.needs_profile("standard"):
+                lines.append(
+                    f"{_I.WARN}  sshd_config will be modified: Port \u2192 2222, "
+                    "PermitRootLogin \u2192 no "
+                    "\u2014 takes effect on next sshd restart or reboot"
+                )
 
         if "network" in active:
             net = "Add firewall rules (http, https, 8080/tcp), /etc/hosts entries"
@@ -2059,6 +2065,13 @@ domain=INTERNAL
             icon = SECTION_ICONS[section]
             label = SECTION_LABELS[section]
             _skip(f"{icon}  {label}: not yet implemented")
+
+        if "config" not in self.skip and self.needs_profile("standard"):
+            print()
+            _warn("WARNING: sshd_config was modified \u2014 "
+                  "Port changed to 2222, PermitRootLogin set to no.")
+            _warn("         These take effect on next sshd restart or reboot. "
+                  "Plan accordingly.")
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
