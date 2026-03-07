@@ -1692,11 +1692,12 @@ domain=INTERNAL
             # Check if yoinkc succeeded (exit code 0) and produced a tarball
             if result and result.returncode == 0:
                 output_path = Path(self.yoinkc_output).resolve()
-                tarballs = list(output_path.glob("*.tar.gz"))
+                parent_path = output_path.parent
+                tarballs = list(parent_path.glob("*.tar.gz"))
                 if tarballs:
                     self._print_next_steps()
                 else:
-                    _warn(f"yoinkc completed but no tarball found in {output_path}")
+                    _warn(f"yoinkc completed but no tarball found in {parent_path}")
             elif result:
                 _warn(f"yoinkc failed with exit code {result.returncode}")
             else:
@@ -1715,12 +1716,13 @@ domain=INTERNAL
         import socket as _socket
         hostname = _socket.gethostname()
         output_path = Path(self.yoinkc_output).resolve()
-        tarballs = sorted(output_path.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
+        parent_path = output_path.parent
+        tarballs = sorted(parent_path.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
         tarball_name = tarballs[-1].name if tarballs else f"yoinkc-output-{hostname}-*.tar.gz"
         print()
         _banner(f"{_I.DOWNLOAD}  Next steps")
         _info(f"{_I.ROCKET}  Copy the tarball to your workstation and review:")
-        _info(f"             scp {hostname}:{output_path / tarball_name} .")
+        _info(f"             scp {hostname}:{parent_path / tarball_name} .")
         _info(f"             yoinkc-refine {tarball_name}")
 
     def _count_created(self, prefix: str) -> int:
