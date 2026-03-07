@@ -1667,12 +1667,27 @@ domain=INTERNAL
             self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
         except Exception as exc:
             _warn(f"Could not launch yoinkc: {exc}")
+        else:
+            self._print_next_steps()
         finally:
             if script_path:
                 try:
                     os.unlink(script_path)
                 except OSError:
                     pass
+
+    def _print_next_steps(self) -> None:
+        """Print a 'Next steps' block after a successful yoinkc run."""
+        import socket as _socket
+        hostname = _socket.gethostname()
+        output_path = Path(self.yoinkc_output).resolve()
+        tarballs = sorted(output_path.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
+        tarball_name = tarballs[-1].name if tarballs else f"yoinkc-output-{hostname}-*.tar.gz"
+        print()
+        _banner(f"{_I.DOWNLOAD}  Next steps")
+        _info(f"{_I.ROCKET}  Copy the tarball to your workstation and review:")
+        _info(f"             scp {hostname}:{output_path / tarball_name} .")
+        _info(f"             yoinkc-refine {tarball_name}")
 
     def _count_created(self, prefix: str) -> int:
         """Count files_created entries whose path starts with *prefix*."""

@@ -340,7 +340,9 @@ class TestConfirmation(DriftifyTestCase):
                               skip_sections=["rpm", "network"])
         lines = d._run_description()
         self.assertFalse(any("Install" in l for l in lines))
-        self.assertFalse(any("firewall" in l for l in lines))
+        # "Add firewall rules" is the network-section-specific phrase; the
+        # config section may still mention "firewall" for the sshd port change.
+        self.assertFalse(any("Add firewall rules" in l for l in lines))
         self.assertTrue(any("httpd" in l for l in lines))
 
     def test_yes_flag_parsed(self):
