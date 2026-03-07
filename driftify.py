@@ -455,7 +455,8 @@ class Driftify:
                 lines.append(
                     f"{_I.WARN}  sshd_config will be modified: Port \u2192 2222, "
                     "PermitRootLogin \u2192 no "
-                    "\u2014 takes effect on next sshd restart or reboot"
+                    "\u2014 firewall and SELinux label updated; "
+                    "takes effect on next sshd restart or reboot"
                 )
 
         if "network" in active:
@@ -795,6 +796,27 @@ log_level = info
                 "PermitRootLogin": "PermitRootLogin no",
                 "Port":            "Port 2222",
             })
+            # Open port 2222 in firewalld so SSH is reachable after sshd restarts.
+            # drift_network opens 8080/tcp but not the new SSH port, so we handle
+            # it here alongside the config change that requires it.
+            _info(f"{_I.GLOBE}  Opening 2222/tcp in firewalld for SSH")
+            self.run_cmd(
+                ["firewall-cmd", "--permanent", "--add-port=2222/tcp"],
+                check=False,
+            )
+            self.run_cmd(["firewall-cmd", "--reload"], check=False)
+            # Add the SELinux port label so sshd can bind to 2222.  semanage may
+            # not be present on every minimal install; skip gracefully if absent.
+            import shutil as _shutil_semanage
+            if _shutil_semanage.which("semanage"):
+                _info(f"{_I.SHIELD}  Adding ssh_port_t SELinux label for port 2222")
+                self.run_cmd(
+                    ["semanage", "port", "-a", "-t", "ssh_port_t", "-p", "tcp", "2222"],
+                    check=False,
+                )
+            else:
+                _warn("semanage not found — skipping ssh_port_t label for 2222"
+                      " (install policycoreutils-python-utils if needed)")
             self._append_managed_block(
                 "/etc/chrony.conf",
                 "chrony-servers",
@@ -1620,186 +1642,6 @@ domain=INTERNAL
             import shutil as _shutil
             _shutil.rmtree(td, ignore_errors=True)
 
-    # ── Summary ───────────────────────────────────────────────────────────
-
-    def _launch_yoinkc(self) -> None:
-        """Download run-yoinkc.sh from the yoinkc repo and execute it."""
-        import urllib.request
-        import tempfile
-        import stat
-
-        _banner(f"{_I.ROCKET}  Launching yoinkc")
-        _info(f"{_I.DOWNLOAD}  Script: {self._YOINKC_SCRIPT_URL}")
-        _info(f"{_I.DATABASE}  Output: {self.yoinkc_output}")
-
-        if self.dry_run:
-            _dry(f"curl {self._YOINKC_SCRIPT_URL} | sh -s -- {self.yoinkc_output}")
-            return
-
-        script_path = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".sh", delete=False, mode="w"
-            ) as tf:
-                script_path = tf.name
-            urllib.request.urlretrieve(self._YOINKC_SCRIPT_URL, script_path)
-            os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
-            self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
-        except Exception as exc:
-            _warn(f"Could not launch yoinkc: {exc}")
-        finally:
-            if script_path:
-                try:
-                    os.unlink(script_path)
-                except OSError:
-                    pass
-
-    def _print_summary(self) -> None:
-        elapsed = time.monotonic() - self._t0
-        m, s = divmod(int(elapsed), 60)
-
-        _banner(f"{_I.CHECK}  driftify complete "
-                f"({self.profile} profile, {m}m {s:02d}s)")
-
-        def _sec(section, parts):
-            return "skipped" if section in self.skip else ", ".join(parts)
-
-        # ── RPM ──────────────────────────────────────────────────────────────
-        pkg_count = sum(len(BASE_PACKAGES.get(l, [])) for l in PROFILES if self.needs_profile(l))
-        epel_count = sum(len(EPEL_PACKAGES.get(l, [])) for l in PROFILES if self.needs_profile(l))
-        if "rpm" not in self.skip:
-            rpm_parts = [f"{pkg_count + epel_count} packages requested", "1 repo added"]
-            if self.needs_profile("standard"):
-                rpm_parts += ["1 ghost package", "1 orphaned config"]
-            rpm_str = ", ".join(rpm_parts)
-        else:
-            rpm_str = "skipped"
-        _info(f"{SECTION_ICONS['rpm']}  RPM:        {rpm_str}")
-
-        # ── Services ─────────────────────────────────────────────────────────
-        if "services" not in self.skip:
-            svc = ["2 enabled", "1 disabled"]
-            if self.needs_profile("standard"):
-                svc.append("1 masked (if present)")
-            svc_str = ", ".join(svc)
-        else:
-            svc_str = "skipped"
-        _info(f"{SECTION_ICONS['services']}  Services:   {svc_str}")
-
-        # ── Config ───────────────────────────────────────────────────────────
-        _info(f"{SECTION_ICONS['config']}  Config:     {_sec('config', ['RPM + unowned config drift applied'])}")
-
-        # ── Network ──────────────────────────────────────────────────────────
-        if "network" not in self.skip:
-            net = ["3 firewall rules", "hosts entries"]
-            if self.needs_profile("standard"):
-                net += ["zone", "NM profile", "proxy"]
-            net_str = ", ".join(net)
-        else:
-            net_str = "skipped"
-        _info(f"{SECTION_ICONS['network']}  Network:    {net_str}")
-
-        # ── Storage ──────────────────────────────────────────────────────────
-        if "storage" not in self.skip:
-            sto = ["/var dirs"]
-            if self.needs_profile("standard"):
-                sto.append("fstab entries")
-            sto_str = ", ".join(sto)
-        else:
-            sto_str = "skipped"
-        _info(f"{SECTION_ICONS['storage']}  Storage:    {sto_str}")
-
-        # ── Scheduled ────────────────────────────────────────────────────────
-        if "scheduled" not in self.skip:
-            sch = ["2 cron files"]
-            if self.needs_profile("standard"):
-                sch += ["1 timer", "1 at job", "1 per-user crontab"]
-            if self.needs_profile("kitchen-sink"):
-                sch.append("1 complex cron")
-            sch_str = ", ".join(sch)
-        else:
-            sch_str = "skipped"
-        _info(f"{SECTION_ICONS['scheduled']}  Scheduled:  {sch_str}")
-
-        # ── Containers ───────────────────────────────────────────────────────
-        if "containers" not in self.skip:
-            ctr = ["webapp.container"]
-            if self.needs_profile("standard"):
-                ctr += ["redis.container", "myapp.network", "docker-compose.yml"]
-            if self.needs_profile("kitchen-sink"):
-                ctr.append("user-level quadlet")
-            ctr_str = ", ".join(ctr)
-        else:
-            ctr_str = "skipped"
-        _info(f"{SECTION_ICONS['containers']}  Containers: {ctr_str}")
-
-        # ── Non-RPM ──────────────────────────────────────────────────────────
-        if "nonrpm" not in self.skip:
-            nrpm = ["Python venv", "Go binary (yq)"]
-            if self.needs_profile("standard"):
-                nrpm += ["npm project", "git repo", "deploy.sh"]
-            if self.needs_profile("kitchen-sink"):
-                nrpm.append("mystery binary")
-            nrpm_str = ", ".join(nrpm)
-        else:
-            nrpm_str = "skipped"
-        _info(f"{SECTION_ICONS['nonrpm']}  Non-RPM:    {nrpm_str}")
-
-        # ── Kernel ───────────────────────────────────────────────────────────
-        if "kernel" not in self.skip:
-            ker = ["6 sysctl values applied"]
-            if self.needs_profile("standard"):
-                ker += ["br_netfilter loaded", "dracut config"]
-            if self.needs_profile("kitchen-sink"):
-                ker.append("grub args")
-            ker_str = ", ".join(ker)
-        else:
-            ker_str = "skipped"
-        _info(f"{SECTION_ICONS['kernel']}  Kernel:     {ker_str}")
-
-        # ── SELinux ──────────────────────────────────────────────────────────
-        if "selinux" not in self.skip:
-            nb = 1 + (1 if self.needs_profile("standard") else 0)
-            nm = 1 if self.needs_profile("kitchen-sink") else 0
-            sel = [f"{nb} boolean(s) set"]
-            if self.needs_profile("standard"):
-                sel.append("audit rules")
-            if nm:
-                sel.append(f"{nm} policy module(s)")
-            sel_str = ", ".join(sel)
-        else:
-            sel_str = "skipped"
-        _info(f"{SECTION_ICONS['selinux']}  SELinux:    {sel_str}")
-
-        # ── Users ────────────────────────────────────────────────────────────
-        if "users" not in self.skip:
-            usr_n = 1 + (1 if self.needs_profile("standard") else 0)
-            usr = [f"{usr_n} user(s)", "1 group"]
-            if self.needs_profile("standard"):
-                usr += ["sudoers rule", "SSH key"]
-            usr_str = ", ".join(usr)
-        else:
-            usr_str = "skipped"
-        _info(f"{SECTION_ICONS['users']}  Users:      {usr_str}")
-
-        # ── Secrets ──────────────────────────────────────────────────────────
-        _info(f"{SECTION_ICONS['secrets']}  Secrets:    {_sec('secrets', ['fake secrets planted'])}")
-
-        # Placeholder lines for future sections
-        for section in SECTIONS:
-            if section in self._IMPLEMENTED:
-                continue
-            _skip(f"{SECTION_ICONS[section]}  {SECTION_LABELS[section]}: not yet implemented")
-
-        print()
-        _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
-        if not self.run_yoinkc:
-            _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
-            _info(f"             or: curl -fsSL "
-                  f"https://raw.githubusercontent.com/marrusl/yoinkc/main/"
-                  f"run-yoinkc.sh | sh")
-
-
     def _launch_yoinkc(self) -> None:
         """Download run-yoinkc.sh from the yoinkc repo and execute it."""
         import urllib.request
@@ -2070,8 +1912,8 @@ domain=INTERNAL
             print()
             _warn("WARNING: sshd_config was modified \u2014 "
                   "Port changed to 2222, PermitRootLogin set to no.")
-            _warn("         These take effect on next sshd restart or reboot. "
-                  "Plan accordingly.")
+            _warn("         firewall-cmd and semanage updated for port 2222.")
+            _warn("         Changes take effect on next sshd restart or reboot.")
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
