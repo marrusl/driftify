@@ -1687,11 +1687,22 @@ domain=INTERNAL
                 script_path = tf.name
             urllib.request.urlretrieve(self._YOINKC_SCRIPT_URL, script_path)
             os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
-            self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
+            result = self.run_cmd(["sh", script_path, self.yoinkc_output], check=False)
+            
+            # Check if yoinkc succeeded (exit code 0) and produced a tarball
+            if result and result.returncode == 0:
+                output_path = Path(self.yoinkc_output).resolve()
+                tarballs = list(output_path.glob("*.tar.gz"))
+                if tarballs:
+                    self._print_next_steps()
+                else:
+                    _warn(f"yoinkc completed but no tarball found in {output_path}")
+            elif result:
+                _warn(f"yoinkc failed with exit code {result.returncode}")
+            else:
+                _warn("yoinkc subprocess did not complete normally")
         except Exception as exc:
             _warn(f"Could not launch yoinkc: {exc}")
-        else:
-            self._print_next_steps()
         finally:
             if script_path:
                 try:
