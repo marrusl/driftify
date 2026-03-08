@@ -330,7 +330,8 @@ class Driftify:
         if path.exists():
             with open(path) as fh:
                 if fh.read() == content:
-                    _info(f"No change needed: {path}")
+                    if not self.quiet:
+                        _info(f"No change needed: {path}")
                     return
         if self.dry_run:
             action = "update" if path.exists() else "create"
