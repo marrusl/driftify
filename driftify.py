@@ -1761,21 +1761,12 @@ domain=INTERNAL
         _info(f"             scp {hostname}:{parent_path / tarball_name} .")
         _info(f"             yoinkc-refine {tarball_name}")
 
-    def _count_created(self, prefix: str) -> int:
-        """Count files_created entries whose path starts with *prefix*."""
-        return sum(
-            1 for f in self.stamp.data.get("files_created", [])
-            if f.startswith(prefix)
-        )
-
     def _print_summary(self) -> None:
         elapsed = time.monotonic() - self._t0
         m, s = divmod(int(elapsed), 60)
 
         _banner(f"{_I.CHECK}  driftify complete "
                 f"({self.profile} profile, {m}m {s:02d}s)")
-
-        d = self.stamp.data  # {} when dry_run (stamp never started)
 
         # ── RPM ──────────────────────────────────────────────────────────────
         pkg_count = sum(
@@ -1787,9 +1778,8 @@ domain=INTERNAL
             for lvl in PROFILES if self.needs_profile(lvl)
         )
         if "rpm" not in self.skip:
-            ghost = d.get("ghost_package") if d else None
             rpm_parts = [f"{pkg_count + epel_count} packages requested", "1 repo added"]
-            if ghost or self.needs_profile("standard"):
+            if self.needs_profile("standard"):
                 rpm_parts += ["1 ghost package", "1 orphaned config"]
             rpm_str = ", ".join(rpm_parts)
         else:
@@ -1798,10 +1788,9 @@ domain=INTERNAL
 
         # ── Services ─────────────────────────────────────────────────────────
         if "services" not in self.skip:
-            en  = len(d.get("services_enabled",  [])) if d else 2
-            dis = len(d.get("services_disabled", [])) if d else 1
-            mas = len(d.get("services_masked",   [])) if d else (
-                1 if self.needs_profile("standard") else 0)
+            en  = 2
+            dis = 1
+            mas = 1 if self.needs_profile("standard") else 0
             parts = []
             if en:  parts.append(f"{en} enabled")
             if dis: parts.append(f"{dis} disabled")
@@ -1813,25 +1802,14 @@ domain=INTERNAL
 
         # ── Config ───────────────────────────────────────────────────────────
         if "config" not in self.skip:
-            if d:
-                cfg_files   = self._count_created("/etc/myapp/")
-                cfg_backups = len([k for k in d.get("file_backups", {})
-                                   if k.startswith("/etc/")])
-                cfg_parts = []
-                if cfg_backups: cfg_parts.append(f"{cfg_backups} RPM config(s) modified")
-                if cfg_files:   cfg_parts.append(f"{cfg_files} unowned file(s) created")
-                cfg_str = ", ".join(cfg_parts) if cfg_parts else "applied"
-            else:
-                cfg_str = "RPM + unowned config drift applied"
+            cfg_str = "RPM + unowned config drift applied"
         else:
             cfg_str = "skipped"
         _info(f"{SECTION_ICONS['config']}  Config:     {cfg_str}")
 
         # ── Network ──────────────────────────────────────────────────────────
         if "network" not in self.skip:
-            fw_n = (len(d.get("firewall_services", [])) +
-                    len(d.get("firewall_ports",    []))) if d else 3
-            net_parts = [f"{fw_n} firewall rules", "hosts entries"]
+            net_parts = ["3 firewall rules", "hosts entries"]
             if self.needs_profile("standard"):
                 net_parts += ["zone", "NM profile", "proxy"]
             net_str = ", ".join(net_parts)
@@ -1841,111 +1819,57 @@ domain=INTERNAL
 
         # ── Storage ──────────────────────────────────────────────────────────
         if "storage" not in self.skip:
-            if d:
-                var_dirs = len([p for p in d.get("dirs_created", [])
-                                if p.startswith("/var/")])
-                sto_parts = []
-                if var_dirs: sto_parts.append(f"{var_dirs} /var dir(s)")
-                if self.needs_profile("standard"):
-                    sto_parts.append("fstab entries")
-                sto_str = ", ".join(sto_parts) if sto_parts else "dirs created"
-            else:
-                sto_str = "fstab + /var storage drift applied"
+            sto_str = "fstab + /var storage drift applied"
         else:
             sto_str = "skipped"
         _info(f"{SECTION_ICONS['storage']}  Storage:    {sto_str}")
 
         # ── Scheduled ────────────────────────────────────────────────────────
         if "scheduled" not in self.skip:
-            if d:
-                at_n    = len(d.get("at_jobs", []))
-                tmr_n   = len([sv for sv in d.get("services_enabled", [])
-                                if sv.endswith(".timer")])
-                cron_n  = (self._count_created("/etc/cron.d/") +
-                           self._count_created("/etc/cron.daily/"))
-                spool_n = self._count_created("/var/spool/cron/")
-                sch_parts = []
-                if cron_n:  sch_parts.append(f"{cron_n} cron file(s)")
-                if tmr_n:   sch_parts.append(f"{tmr_n} timer(s)")
-                if at_n:    sch_parts.append(f"{at_n} at job(s)")
-                if spool_n: sch_parts.append(f"{spool_n} user crontab(s)")
-                sch_str = ", ".join(sch_parts) if sch_parts else "applied"
-            else:
-                sch_parts = ["2 cron files"]
-                if self.needs_profile("standard"):
-                    sch_parts += ["1 crontab entry", "1 timer", "1 at job", "1 per-user crontab"]
-                sch_str = ", ".join(sch_parts)
+            sch_parts = ["2 cron files"]
+            if self.needs_profile("standard"):
+                sch_parts += ["1 crontab entry", "1 timer", "1 at job", "1 per-user crontab"]
+            sch_str = ", ".join(sch_parts)
         else:
             sch_str = "skipped"
         _info(f"{SECTION_ICONS['scheduled']}  Scheduled:  {sch_str}")
 
         # ── Containers ───────────────────────────────────────────────────────
         if "containers" not in self.skip:
-            if d:
-                quadlets = (self._count_created("/etc/containers/systemd/") +
-                            self._count_created("/home/appuser/.config/"))
-                compose  = self._count_created("/opt/myapp/docker-compose")
-                ctr_parts = []
-                if quadlets: ctr_parts.append(f"{quadlets} quadlet file(s)")
-                if compose:  ctr_parts.append("docker-compose.yml")
-                ctr_str = ", ".join(ctr_parts) if ctr_parts else "applied"
-            else:
-                ctr_parts = ["1 quadlet (.container)"]
-                if self.needs_profile("standard"):
-                    ctr_parts += ["redis.container", "myapp.network", "docker-compose.yml"]
-                ctr_str = ", ".join(ctr_parts)
+            ctr_parts = ["1 quadlet (.container)"]
+            if self.needs_profile("standard"):
+                ctr_parts += ["redis.container", "myapp.network", "docker-compose.yml"]
+            ctr_str = ", ".join(ctr_parts)
         else:
             ctr_str = "skipped"
         _info(f"{SECTION_ICONS['containers']}  Containers: {ctr_str}")
 
         # ── Non-RPM ──────────────────────────────────────────────────────────
         if "nonrpm" not in self.skip:
-            if d:
-                rdirs   = len(d.get("recursive_dirs_created", []))
-                scripts = self._count_created("/usr/local/bin/")
-                nrpm_parts = []
-                if rdirs:   nrpm_parts.append(f"{rdirs} dir tree(s) (venv/npm/git)")
-                if scripts: nrpm_parts.append(f"{scripts} /usr/local/bin file(s)")
-                nrpm_str = ", ".join(nrpm_parts) if nrpm_parts else "applied"
-            else:
-                nrpm_parts = ["Python venv", "Go binary (yq)"]
-                if self.needs_profile("standard"):
-                    nrpm_parts += ["npm project", "git repo", "deploy.sh"]
-                nrpm_str = ", ".join(nrpm_parts)
+            nrpm_parts = ["Python venv", "Go binary (yq)"]
+            if self.needs_profile("standard"):
+                nrpm_parts += ["npm project", "git repo", "deploy.sh"]
+            nrpm_str = ", ".join(nrpm_parts)
         else:
             nrpm_str = "skipped"
         _info(f"{SECTION_ICONS['nonrpm']}  Non-RPM:    {nrpm_str}")
 
         # ── Kernel ───────────────────────────────────────────────────────────
         if "kernel" not in self.skip:
-            if d:
-                ker_files = (self._count_created("/etc/sysctl.d/") +
-                             self._count_created("/etc/modules-load.d/") +
-                             self._count_created("/etc/modprobe.d/") +
-                             self._count_created("/etc/dracut.conf.d/"))
-                grub_mod  = "/etc/default/grub" in d.get("file_backups", {})
-                ker_parts = ["sysctl applied live"]
-                if ker_files: ker_parts.insert(0, f"{ker_files} kernel config file(s)")
-                if grub_mod:  ker_parts.append("grub args modified")
-                ker_str = ", ".join(ker_parts)
-            else:
-                ker_parts = ["6 sysctl values applied"]
-                if self.needs_profile("standard"):
-                    ker_parts += ["br_netfilter loaded", "modprobe.d config",
-                                  "dracut config", "grub audit=1"]
-                ker_str = ", ".join(ker_parts)
+            ker_parts = ["6 sysctl values applied"]
+            if self.needs_profile("standard"):
+                ker_parts += ["br_netfilter loaded", "modprobe.d config",
+                              "dracut config", "grub audit=1"]
+            ker_str = ", ".join(ker_parts)
         else:
             ker_str = "skipped"
         _info(f"{SECTION_ICONS['kernel']}  Kernel:     {ker_str}")
 
         # ── SELinux ──────────────────────────────────────────────────────────
         if "selinux" not in self.skip:
-            nb = len(d.get("selinux_booleans", [])) if d else (
-                1 + (1 if self.needs_profile("standard") else 0))
-            nm = len(d.get("selinux_modules",  [])) if d else (
-                1 if self.needs_profile("kitchen-sink") else 0)
-            audit_n = self._count_created("/etc/audit/rules.d/") if d else (
-                1 if self.needs_profile("standard") else 0)
+            nb      = 1 + (1 if self.needs_profile("standard") else 0)
+            nm      = 1 if self.needs_profile("kitchen-sink") else 0
+            audit_n = 1 if self.needs_profile("standard") else 0
             sel_parts = []
             if nb:      sel_parts.append(f"{nb} boolean(s) set")
             if audit_n: sel_parts.append(f"{audit_n} audit rule file(s)")
@@ -1957,13 +1881,10 @@ domain=INTERNAL
 
         # ── Users ────────────────────────────────────────────────────────────
         if "users" not in self.skip:
-            usr_n  = len(d.get("users_created",  [])) if d else (
-                1 + (1 if self.needs_profile("standard") else 0))
-            grp_n  = len(d.get("groups_created", [])) if d else 1
-            sudo_n = self._count_created("/etc/sudoers.d/") if d else (
-                1 if self.needs_profile("standard") else 0)
-            ssh_n  = self._count_created("/home/appuser/.ssh/") if d else (
-                1 if self.needs_profile("standard") else 0)
+            usr_n  = 1 + (1 if self.needs_profile("standard") else 0)
+            grp_n  = 1
+            sudo_n = 1 if self.needs_profile("standard") else 0
+            ssh_n  = 1 if self.needs_profile("standard") else 0
             usr_parts = []
             if usr_n:  usr_parts.append(f"{usr_n} user(s)")
             if grp_n:  usr_parts.append(f"{grp_n} group(s)")
@@ -1976,13 +1897,7 @@ domain=INTERNAL
 
         # ── Secrets ──────────────────────────────────────────────────────────
         if "secrets" not in self.skip:
-            if d:
-                sec_files = (self._count_created("/etc/myapp/server.key") +
-                             self._count_created("/opt/myapp/.env"))
-                sec_str = (f"{sec_files} secret file(s) + credential blocks "
-                           "in app configs") if sec_files else "credential blocks appended"
-            else:
-                sec_str = "fake secrets planted"
+            sec_str = "fake secrets planted"
         else:
             sec_str = "skipped"
         _info(f"{SECTION_ICONS['secrets']}  Secrets:    {sec_str}")

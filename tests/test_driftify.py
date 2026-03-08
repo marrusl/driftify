@@ -831,3 +831,32 @@ class TestSELinux(DriftifyTestCase):
         self.assertIn("/etc/audit/rules.d/driftify.rules", output)
 
 
+class TestPrintSummary(DriftifyTestCase):
+    """Verify _print_summary shows correct counts regardless of stamp contents."""
+
+    def test_summary_nonzero_counts_on_real_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            d.stamp.finish()
+            d._t0 = driftify.time.monotonic()
+
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d._print_summary()
+            self._suppress.__enter__()
+            output = buf.getvalue()
+
+        # Services should show "2 enabled", not "0 enabled"
+        self.assertIn("2 enabled", output)
+        self.assertNotIn("0 enabled", output)
+        # Standard profile adds a masked service
+        self.assertIn("1 masked", output)
+        # Users section should show users and groups
+        self.assertIn("2 user(s)", output)
+        self.assertIn("1 group(s)", output)
+        # Scheduled section should list cron files
+        self.assertIn("2 cron files", output)
+
