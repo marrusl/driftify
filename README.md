@@ -37,7 +37,7 @@ sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
 | `--skip-SECTION` | Skip a section (e.g. `--skip-rpm`, `--skip-services`, `--skip-nonrpm`) |
 | `--dry-run` | Print commands without executing them |
 | `-y`, `--yes` | Skip interactive confirmation prompt |
-| `-q`, `--quiet` | Show only section banners, warnings, and errors |
+| `-q`, `--quiet` | Show only section banners, warnings, and errors. Does not suppress yoinkc output when using `--run-yoinkc`. |
 | `--verbose` | Reserved for future use |
 | `--run-yoinkc` | After applying drift, download and run `run-yoinkc.sh` |
 | `--yoinkc-output DIR` | Output directory for yoinkc artifacts (default: `./yoinkc-output`) |
@@ -78,17 +78,17 @@ Each section maps to a yoinkc inspector:
 
 ## Features
 
-- 🐍 **Single file, stdlib-only Python 3** → `curl` it onto a VM and run it. No pip, no venv, no bootstrapping.
-- 🎚️ **Profiles** → minimal for CI, standard for demos, kitchen-sink for stress testing.
-- ⏭️ **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
-- 👁️ **Dry-run mode** → `--dry-run` prints every command without executing anything.
-- 📋 **Run record** → writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps — useful for auditing and `--run-yoinkc` context.
-- 🔍 **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
-- ♻️ **Idempotent** → safe to run twice without breaking the system.
-- 🔑 **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
-- 🎨 **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
-- ✅ **Interactive confirmation** → prints a plain-English summary of what will happen and asks `[y/N]` before touching anything. Use `-y` / `--yes` to bypass. Skipped automatically in `--dry-run` mode.
-- 🔬 **yoinkc handoff** → `--run-yoinkc` downloads and runs `run-yoinkc.sh` immediately after drift is applied, writing artifacts to `--yoinkc-output`.
+- **Single file, stdlib-only Python 3** → `curl` it onto a VM and run it. No pip, no venv, no bootstrapping.
+- **Profiles** → minimal for CI, standard for demos, kitchen-sink for stress testing.
+- **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
+- **Dry-run mode** → `--dry-run` prints every command without executing anything.
+- **Run record** → writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps.
+- **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
+- **Idempotent** → safe to run twice without breaking the system.
+- **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
+- **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
+- **Interactive confirmation** → prints a plain-English summary of what will happen and asks `[y/N]` before touching anything. Use `-y` / `--yes` to bypass. Skipped automatically in `--dry-run` mode.
+- **yoinkc handoff** → `--run-yoinkc` downloads and runs `run-yoinkc.sh` immediately after drift is applied, writing artifacts to `--yoinkc-output`.
 
 ## Running tests
 
