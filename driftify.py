@@ -1456,7 +1456,9 @@ domain=INTERNAL
 
         _info(f"{_I.DOWNLOAD}  Downloading yq ({arch}) → {dest}")
         try:
-            urllib.request.urlretrieve(url, dest)
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                with open(dest, "wb") as fh:
+                    fh.write(resp.read())
             os.chmod(dest, 0o755)
             _info(f"  Go binary written to {dest}")
         except Exception as exc:
@@ -1690,7 +1692,9 @@ domain=INTERNAL
                 suffix=".sh", delete=False, mode="w"
             ) as tf:
                 script_path = tf.name
-            urllib.request.urlretrieve(self._YOINKC_SCRIPT_URL, script_path)
+            with urllib.request.urlopen(self._YOINKC_SCRIPT_URL, timeout=60) as resp:
+                with open(script_path, "w") as fh:
+                    fh.write(resp.read().decode())
             os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
             # Stream stdout+stderr live so the user sees container progress,
             # but accumulate the output so we can check it on failure.
