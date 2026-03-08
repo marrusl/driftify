@@ -443,7 +443,9 @@ class Driftify:
         if "services" in active:
             svcs = "Enable httpd, nginx; disable kdump"
             if self.needs_profile("standard"):
-                svcs += "; mask bluetooth (if present)"
+                svcs += "; mask bluetooth (if present); drop-in override for httpd"
+            if self.needs_profile("kitchen-sink"):
+                svcs += ", nginx"
             lines.append(svcs)
 
         if "config" in active:
@@ -729,6 +731,29 @@ class Driftify:
                 self.run_cmd(["systemctl", "mask", "bluetooth"], check=False)
             else:
                 _warn("bluetooth unit not found — skipping mask")
+
+            # Drop-in override for httpd: increased startup timeout and file
+            # descriptor limit, representative of a high-traffic deployment.
+            _info(f"{_I.WRENCH}  Writing httpd.service.d/override.conf drop-in")
+            self._ensure_dir(Path("/etc/systemd/system/httpd.service.d"))
+            self._write_managed_text(
+                "/etc/systemd/system/httpd.service.d/override.conf",
+                "[Service]\n"
+                "TimeoutStartSec=600\n"
+                "LimitNOFILE=65535\n",
+            )
+
+        if self.needs_profile("kitchen-sink"):
+            # Drop-in override for nginx: higher fd limit and a post-start
+            # deploy notification hook.
+            _info(f"{_I.WRENCH}  Writing nginx.service.d/override.conf drop-in")
+            self._ensure_dir(Path("/etc/systemd/system/nginx.service.d"))
+            self._write_managed_text(
+                "/etc/systemd/system/nginx.service.d/override.conf",
+                "[Service]\n"
+                "LimitNOFILE=131072\n"
+                "ExecStartPost=/usr/local/bin/notify-deploy.sh\n",
+            )
 
     # ── Config Files ───────────────────────────────────────────────────────
 
@@ -1790,10 +1815,13 @@ domain=INTERNAL
             en  = 2
             dis = 1
             mas = 1 if self.needs_profile("standard") else 0
+            dropin = (1 if self.needs_profile("standard") else 0) + \
+                     (1 if self.needs_profile("kitchen-sink") else 0)
             parts = []
-            if en:  parts.append(f"{en} enabled")
-            if dis: parts.append(f"{dis} disabled")
-            if mas: parts.append(f"{mas} masked")
+            if en:     parts.append(f"{en} enabled")
+            if dis:    parts.append(f"{dis} disabled")
+            if mas:    parts.append(f"{mas} masked")
+            if dropin: parts.append(f"{dropin} drop-in override(s)")
             svc_str = ", ".join(parts) if parts else "none"
         else:
             svc_str = "skipped"

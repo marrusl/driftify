@@ -205,9 +205,12 @@ class TestHelpersAndDryRun(DriftifyTestCase):
         d = driftify.Driftify("standard", dry_run=True, skip_sections=["rpm"])
         self._suppress.__exit__(None, None, None)
         buf = io.StringIO()
+        # Return True only for bluetooth unit paths so _write_managed_text
+        # (called by the new drop-in code) doesn't attempt to open missing files.
+        def _bt_exists(self_path):
+            return "bluetooth.service" in str(self_path)
         with redirect_stdout(buf):
-            with unittest.mock.patch.object(driftify.Path, "exists",
-                                            return_value=True):
+            with unittest.mock.patch.object(driftify.Path, "exists", _bt_exists):
                 d.drift_services()
         self._suppress.__enter__()
         self.assertIn("systemctl mask bluetooth", buf.getvalue())
@@ -450,6 +453,95 @@ class TestSummary(DriftifyTestCase):
             d._print_summary()
         self._suppress.__enter__()
         self.assertIn("orphaned config", buf.getvalue())
+
+
+class TestServices(DriftifyTestCase):
+    def test_services_standard_dry_run_creates_httpd_dropin(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists", return_value=False):
+                d.drift_services()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("httpd.service.d/override.conf", output)
+        self.assertNotIn("nginx.service.d/override.conf", output)
+
+    def test_services_kitchen_sink_dry_run_creates_both_dropins(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists", return_value=False):
+                d.drift_services()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("httpd.service.d/override.conf", output)
+        self.assertIn("nginx.service.d/override.conf", output)
+
+    def test_services_minimal_dry_run_no_dropins(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with unittest.mock.patch.object(driftify.Path, "exists", return_value=False):
+                d.drift_services()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertNotIn("override.conf", output)
+
+    def test_services_dropin_content(self):
+        """Verify the drop-in files contain the expected INI directives."""
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            files_written = {}
+
+            def patched_write(path_str, content, mode=0o644):
+                files_written[path_str] = content
+
+            d._write_managed_text = patched_write
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+            # drift_services uses subprocess.run directly for systemctl unit checks
+            mock_subp = unittest.mock.MagicMock()
+            mock_subp.returncode = 1  # unit not found → skip disable/mask
+            with unittest.mock.patch("subprocess.run", return_value=mock_subp):
+                d.drift_services()
+
+        httpd_dropin = next(
+            (v for k, v in files_written.items() if "httpd.service.d" in k), ""
+        )
+        self.assertIn("TimeoutStartSec=600", httpd_dropin)
+        self.assertIn("LimitNOFILE=65535", httpd_dropin)
+
+        nginx_dropin = next(
+            (v for k, v in files_written.items() if "nginx.service.d" in k), ""
+        )
+        self.assertIn("LimitNOFILE=131072", nginx_dropin)
+        self.assertIn("ExecStartPost=/usr/local/bin/notify-deploy.sh", nginx_dropin)
+
+    def test_summary_services_counts_dropins(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d._t0 = __import__("time").monotonic()
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._print_summary()
+        self._suppress.__enter__()
+        self.assertIn("1 drop-in override(s)", buf.getvalue())
+
+    def test_summary_services_kitchen_sink_counts_two_dropins(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        d._t0 = __import__("time").monotonic()
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._print_summary()
+        self._suppress.__enter__()
+        self.assertIn("2 drop-in override(s)", buf.getvalue())
 
 
 class TestScheduled(DriftifyTestCase):
