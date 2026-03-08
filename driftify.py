@@ -59,6 +59,8 @@ EPEL_PACKAGES = {
 
 GHOST_PACKAGE = "words"
 
+GRUB_DEFAULT_PATH = "/etc/default/grub"
+
 
 # ── Nerd Font icons ──────────────────────────────────────────────────────────
 
@@ -1550,19 +1552,23 @@ domain=INTERNAL
             self._append_kernel_cmdline_arg("panic=60 audit=1")
 
     def _append_kernel_cmdline_arg(self, args: str) -> None:
-        """Append args to GRUB_CMDLINE_LINUX in /etc/default/grub."""
-        grub_path = "/etc/default/grub"
+        """Append args to GRUB_CMDLINE_LINUX in /etc/default/grub (idempotent)."""
+        grub_path = GRUB_DEFAULT_PATH
         path = Path(grub_path)
         if not path.exists():
-            _warn("/etc/default/grub not found — skipping grub modification")
+            _warn(f"{grub_path} not found — skipping grub modification")
             return
         with open(path) as fh:
             content = fh.read()
 
         def _append(m):
             existing = m.group(1).rstrip()
+            existing_args = existing.split() if existing else []
+            new_args = [a for a in args.split() if a not in existing_args]
+            if not new_args:
+                return m.group(0)
             sep = " " if existing else ""
-            return f'GRUB_CMDLINE_LINUX="{existing}{sep}{args}"'
+            return f'GRUB_CMDLINE_LINUX="{existing}{sep}{" ".join(new_args)}"'
 
         new_content, n = re.subn(
             r'GRUB_CMDLINE_LINUX="([^"]*)"', _append, content

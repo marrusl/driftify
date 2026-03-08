@@ -767,22 +767,18 @@ class TestKernel(DriftifyTestCase):
             d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
             d.stamp.start(d.profile, d.os_id, d.os_major)
 
-            with unittest.mock.patch.object(
-                driftify.Path, "exists",
-                lambda self: True if str(self) == str(grub) else type(self).exists(self)
-            ):
-                d._append_kernel_cmdline_arg.__func__
-            # Directly test the helper with a real file
-            d._write_managed_text(str(grub), 'GRUB_CMDLINE_LINUX="crashkernel=auto"\n')
-            import re as _re
-            content = grub.read_text()
-            new = _re.sub(
-                r'GRUB_CMDLINE_LINUX="([^"]*)"',
-                lambda m: f'GRUB_CMDLINE_LINUX="{m.group(1)} panic=60 audit=1"',
-                content,
-            )
-            grub.write_text(new)
-            self.assertIn("panic=60 audit=1", grub.read_text())
+            with unittest.mock.patch.object(driftify, "GRUB_DEFAULT_PATH", str(grub)):
+                # First call: args should be appended
+                d._append_kernel_cmdline_arg("panic=60 audit=1")
+                content = grub.read_text()
+                self.assertIn("panic=60", content)
+                self.assertIn("audit=1", content)
+
+                # Second call: args must NOT be duplicated
+                d._append_kernel_cmdline_arg("panic=60 audit=1")
+                content2 = grub.read_text()
+                self.assertEqual(content2.count("panic=60"), 1)
+                self.assertEqual(content2.count("audit=1"), 1)
 
 
 class TestRunOrdering(DriftifyTestCase):
