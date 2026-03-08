@@ -14,11 +14,11 @@ driftify is a companion tool to yoinkc. It runs on a fresh RHEL or CentOS Stream
 
 **Profiles for different contexts.** A quick CI run doesn't need 200MB of Go binaries. A live demo wants enough to be impressive but not so much that it takes 20 minutes to apply. A full stress test wants everything, including the ugly edge cases.
 
-**Idempotent enough.** Running driftify twice shouldn't break the system. It won't be perfectly idempotent (you can't `dnf install` an already-installed package without it being a no-op, which is fine), but it shouldn't fail or produce a worse state on re-run.
+**Idempotent enough.** Running driftify twice shouldn't break the system. It won't be perfectly idempotent (you can't `dnf install` an already-installed package without it being a no-op, which is fine), but it shouldn't fail or produce a worse state on re-run. Kernel argument appending is fully idempotent — it checks existing `GRUB_CMDLINE_LINUX` args before appending, so re-runs don't duplicate values. `useradd`/`groupadd` failures are handled gracefully: if a user already exists or creation fails, dependent operations (SSH key writes, chown, sudoers) are skipped rather than silently corrupted.
 
 **No real secrets.** driftify plants fake secrets that look realistic enough to trigger yoinkc's redaction patterns, but they're obviously synthetic. Nobody should be able to accidentally leak a real credential from a driftify-prepared system.
 
-**Reversible.** A `--undo` flag that removes everything driftify added, restoring the system to (approximately) its pre-driftify state. This is best-effort — some operations like `dnf history undo` can be fragile — but it should work for the common case of "I need this VM clean again."
+**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise yoinkc. System state is restored via VM snapshots, not an undo mechanism. There is no `--undo` flag.
 
 **Fast by default.** The standard profile should complete in under 3 minutes on a system with decent network. Expensive operations (compiling binaries, pulling large images) are opt-in via the `kitchen-sink` profile.
 
@@ -27,11 +27,11 @@ driftify is a companion tool to yoinkc. It runs on a fresh RHEL or CentOS Stream
 driftify is a single-file Python script. No pip dependencies — stdlib only. The reasoning:
 
 - **Python 3 is always available.** It ships on minimal RHEL and CentOS Stream installs (9 and 10) as a weak dependency of `dnf`. No bootstrapping problem.
-- **The logic warrants real data structures.** driftify has profile-gated sections, OS version branching, stamp file serialization with undo tracking, binary provisioning, and conditional file creation across a dozen categories. In shell, this means associative arrays, fragile string parsing, and heredocs inside heredocs. In Python, it's dictionaries, `pathlib`, `json`, and `subprocess.run()`. Cleaner, more testable, harder to get wrong.
+- **The logic warrants real data structures.** driftify has profile-gated sections, OS version branching, stamp file serialization, binary provisioning, and conditional file creation across a dozen categories. In shell, this means associative arrays, fragile string parsing, and heredocs inside heredocs. In Python, it's dictionaries, `pathlib`, `json`, and `subprocess.run()`. Cleaner, more testable, harder to get wrong.
 - **Still transparent.** A sysadmin reading `subprocess.run(["dnf", "install", "-y", "httpd", "nginx"])` knows exactly what happens. The system commands are the same — Python is just the control flow.
 - **Still easy to deploy.** Single file, `#!/usr/bin/python3`, `curl` it onto a VM and `chmod +x && sudo ./driftify.py`. No different from a shell script in practice.
 
-Shell was the initial instinct (sysadmin muscle memory), but the complexity of what driftify needs to track — especially undo state and OS-version-conditional logic — tips the balance to Python.
+Shell was the initial instinct (sysadmin muscle memory), but the complexity of what driftify needs to track — especially OS-version-conditional logic and profile-gated sections — tips the balance to Python.
 
 The script requires root. It checks for this upfront and exits if not root.
 
@@ -55,7 +55,7 @@ Most driftify operations are identical across RHEL 9 and 10 — the same package
 | SELinux policy | Module compilation tools may differ | Detect `checkmodule`/`semodule_package` availability before attempting |
 | Default service set | Some services added/removed between versions | driftify only enables/disables services it explicitly installs, so base-image defaults don't matter |
 
-The principle: driftify should work on RHEL/CentOS Stream 9.x and 10.x without modification. If a specific package or operation isn't available on a given version, it logs a warning and skips that item rather than failing. The stamp file records the detected OS version so undo can make the same version-conditional decisions.
+The principle: driftify should work on RHEL/CentOS Stream 9.x and 10.x without modification. If a specific package or operation isn't available on a given version, it logs a warning and skips that item rather than failing.
 
 It sources a config file (`driftify.conf`) if present, but works entirely with built-in defaults if not. The config file is for overriding things like which packages to install or which fake secrets to plant — useful for customizing demo scenarios without forking the script.
 
@@ -456,39 +456,23 @@ Each `drift_*` method:
 1. Checks if its section is in the skip list (returns early if so).
 2. Checks profile level (`self.needs_profile("minimal"|"standard"|"kitchen-sink")`).
 3. Performs the modifications via `self.run_cmd()` (which respects `--dry-run`).
-4. Records what it did in `self.stamp`.
-5. Logs progress with section headers.
-
-### Undo Support
-
-`driftify.py --undo` reverses the modifications:
-
-- `dnf history undo` for the package transaction (driftify records its dnf history ID in `/etc/driftify.stamp`).
-- `systemctl disable/mask` reversals.
-- Remove all files from known paths that driftify created.
-- `userdel`/`groupdel` for created users.
-- `setsebool -P` to reset booleans.
-- `semodule -r` for installed policy modules.
-- Remove sysctl, modules-load, dracut configs.
-
-Undo is best-effort. The stamp file tracks what was done so undo knows what to reverse. If the stamp file is missing, undo refuses to run (it won't guess).
+4. Logs progress with section headers.
 
 ### Stamp File
 
-`/etc/driftify.stamp` is written at the start of a run and updated at the end. It records:
+`/etc/driftify.stamp` is a JSON file written at the start of a run and updated at the end. It records run metadata only:
 
-```ini
-# driftify stamp — do not remove (used by --undo)
-started=2025-01-15T10:30:00Z
-finished=2025-01-15T10:32:47Z
-profile=standard
-dnf_history_id=47
-users_created=appuser,dbuser
-groups_created=appgroup
-files_created=/etc/myapp/app.conf,/etc/myapp/database.yml,...
-selinux_modules=myapp
-selinux_booleans=httpd_can_network_connect,httpd_can_network_relay
+```json
+{
+  "started": "2025-01-15T10:30:00+00:00",
+  "finished": "2025-01-15T10:32:47+00:00",
+  "profile": "standard",
+  "os_id": "centos",
+  "os_major": 9
+}
 ```
+
+The stamp is used to record when driftify ran, which profile was applied, and which OS version was detected. It is not used for per-item tracking (files created, services changed, etc.) — the completion summary derives those counts from the profile definition, not the stamp.
 
 ## CLI Interface
 
@@ -498,8 +482,11 @@ Usage: sudo ./driftify.py [OPTIONS]
 Options:
   --profile PROFILE    minimal, standard (default), or kitchen-sink
   --skip-SECTION       Skip a section (e.g., --skip-nonrpm, --skip-selinux)
-  --undo               Reverse all driftify modifications (requires stamp file)
   --dry-run            Print what would be done without doing it
+  -y, --yes            Skip interactive confirmation prompt
+  -q, --quiet          Show only section banners, warnings, and errors.
+                       Does not suppress yoinkc output when --run-yoinkc is used.
+  --run-yoinkc         After applying drift, download and run run-yoinkc.sh
   --help               Show this help
 
 Examples:
@@ -507,7 +494,7 @@ Examples:
   sudo ./driftify.py --profile minimal        # CI-friendly, fast
   sudo ./driftify.py --profile kitchen-sink   # Everything
   sudo ./driftify.py --skip-nonrpm            # Standard, but skip non-RPM software
-  sudo ./driftify.py --undo                   # Reverse previous run
+  sudo ./driftify.py --run-yoinkc             # Apply drift then hand off to yoinkc
 ```
 
 ## Coverage Verification
@@ -531,7 +518,7 @@ Users/Groups:         2 users, 1 group, 1 sudoers rule, 1 SSH key
 Secrets:              6 fake credentials planted
 
 Stamp file: /etc/driftify.stamp
-To undo: sudo ./driftify.py --undo
+Run yoinkc: sudo ./driftify.py --run-yoinkc
 ```
 
 This summary directly maps to what yoinkc should find. During development, you can compare driftify's summary against yoinkc's audit report to verify full coverage.
@@ -647,8 +634,7 @@ Modules: br_netfilter loaded (standard+)
 7. **Scheduled Tasks** — cron jobs, timers, at jobs.
 8. **Containers** — quadlet and compose files.
 9. **Non-RPM Software** — pip venvs, npm, binaries (most complex section).
-10. **Undo** — reverse logic for everything above.
-11. **Summary + verification** — final output showing what was done.
+10. **Summary + verification** — final output showing what was done.
 
 ## Future Work
 
