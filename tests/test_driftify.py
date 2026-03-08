@@ -785,6 +785,31 @@ class TestKernel(DriftifyTestCase):
             self.assertIn("panic=60 audit=1", grub.read_text())
 
 
+class TestRunOrdering(DriftifyTestCase):
+    """Verify that run() applies drift sections in the required order."""
+
+    def _section_order(self, profile: str) -> list:
+        """Return the list of section names passed to _next_step during run()."""
+        d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+        order: list = []
+        d._next_step = lambda section: order.append(section)
+        d._confirm = lambda: None
+        d.run()
+        return order
+
+    def test_users_before_scheduled_containers_secrets(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                order = self._section_order(profile)
+                users_idx = order.index("users")
+                for dependent in ("scheduled", "containers", "secrets"):
+                    if dependent in order:
+                        self.assertLess(
+                            users_idx, order.index(dependent),
+                            msg=f"'{dependent}' must come after 'users' (profile={profile})",
+                        )
+
+
 class TestSELinux(DriftifyTestCase):
     def test_selinux_minimal_dry_run_sets_boolean(self):
         d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])

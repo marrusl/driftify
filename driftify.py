@@ -604,15 +604,16 @@ class Driftify:
         self.drift_config()
         self.drift_network()
         self.drift_storage()
+        self.drift_users()
+        # WARNING: drift_scheduled(), drift_containers(), and drift_secrets()
+        # must all run after drift_users().  drift_scheduled() writes crontabs
+        # owned by appuser; drift_containers() chowns files under /home/appuser/;
+        # drift_secrets() writes into /home/appuser/.  Reordering breaks silently.
         self.drift_scheduled()
         self.drift_containers()
         self.drift_kernel()
         self.drift_selinux()
         self.drift_nonrpm()
-        self.drift_users()
-        # WARNING: drift_secrets() must remain after drift_users().
-        # Kitchen-sink secrets write to /home/appuser/ which only exists
-        # once drift_users() has run useradd.  Reordering breaks silently.
         self.drift_secrets()
 
         if not self.dry_run:
