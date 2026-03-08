@@ -1711,17 +1711,12 @@ domain=INTERNAL
                 _warn("yoinkc subprocess produced no output")
                 return
             for line in proc.stdout:
-                if not self.quiet:
-                    print(line, end="", flush=True)
+                print(line, end="", flush=True)
                 captured_lines.append(line)
             proc.wait()
             captured = "".join(captured_lines)
 
             if proc.returncode != 0:
-                # In quiet mode the output was suppressed above — replay it now
-                # so the user can see what went wrong.
-                if self.quiet and captured:
-                    print(captured, end="")
                 _warn(f"yoinkc failed with exit code {proc.returncode}")
                 _AUTH_PATTERNS = (
                     "unauthorized",
