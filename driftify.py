@@ -72,7 +72,6 @@ class _I:
     ERROR    = "\uf057"   # times-circle
     EYE      = "\uf06e"   # eye (dry-run)
     SKIP     = "\uf04e"   # forward
-    UNDO     = "\uf0e2"   # rotate-left
     PACKAGE  = "\uf187"   # archive
     COGS     = "\uf085"   # cogs
     WRENCH   = "\uf0ad"   # wrench
@@ -91,7 +90,6 @@ class _I:
     MASK     = "\uf070"   # eye-slash
     RECYCLE  = "\uf1b8"   # recycle (ghost)
     STAMP    = "\uf249"   # id-badge
-    TRASH    = "\uf1f8"   # trash
 
 SECTION_ICONS = {
     "rpm":        _I.PACKAGE,
@@ -546,23 +544,11 @@ class Driftify:
             return
 
         print()
-        if False:  # undo mode removed
-            started = self.stamp.data.get("started", "unknown time")
-            profile = self.stamp.data.get("profile", "unknown")
-            print(f"  {_C.BOLD}About to reverse the previous driftify run:{_C.RESET}")
-            print(f"    • Restore all backed-up config files to their original state")
-            print(f"    • Remove all files and dirs created by driftify")
-            print(f"    • Remove firewall rules added by driftify")
-            print(f"    • Disable/re-enable services changed by driftify")
-            print(f"    • Reverse dnf transactions from that run")
-            print()
-            print(f"  {_C.DIM}Stamp: {profile} profile, started {started}{_C.RESET}")
-        else:
-            print(f"  {_C.BOLD}About to apply {self.profile} profile drift "
-                  f"on {self.os_id} {self.os_major}:{_C.RESET}")
-            for line in self._run_description():
-                print(f"    • {line}")
-            print()
+        print(f"  {_C.BOLD}About to apply {self.profile} profile drift "
+              f"on {self.os_id} {self.os_major}:{_C.RESET}")
+        for line in self._run_description():
+            print(f"    • {line}")
+        print()
 
         print()
         try:
