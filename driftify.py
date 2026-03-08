@@ -277,6 +277,8 @@ class Driftify:
             1 for s in SECTIONS
             if s not in self.skip and s in self._IMPLEMENTED
         )
+        self._appuser_created = True  # cleared if useradd appuser fails at runtime
+        self._dbuser_created  = True  # cleared if useradd dbuser fails at runtime
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -1178,47 +1180,56 @@ domain=INTERNAL
         _info(f"{_I.USERS}  Creating group appgroup (GID 1001)")
         self.run_cmd(["groupadd", "-g", "1001", "appgroup"], check=False)
         _info(f"{_I.USERS}  Creating user appuser (UID 1001, primary: appgroup)")
-        self.run_cmd(
+        result = self.run_cmd(
             ["useradd", "-u", "1001", "-g", "appgroup", "-m",
              "-c", "App User", "appuser"],
             check=False,
         )
+        if not self.dry_run and result is not None and result.returncode != 0:
+            _warn("useradd appuser failed — skipping SSH keys, chown, and sudoers")
+            self._appuser_created = False
+
         if self.needs_profile("standard"):
             _info(f"{_I.USERS}  Creating user dbuser (UID 1002, nologin)")
-            self.run_cmd(
+            result = self.run_cmd(
                 ["useradd", "-u", "1002", "-s", "/sbin/nologin", "-M",
                  "-c", "DB Service Account", "dbuser"],
                 check=False,
             )
-            # Sudoers rule
-            self._write_managed_text(
-                "/etc/sudoers.d/appusers",
-                "# sudoers rules — driftify synthetic fixture\n"
-                "appuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart myapp\n"
-                "appuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl status myapp\n",
-                mode=0o440,
-            )
+            if not self.dry_run and result is not None and result.returncode != 0:
+                _warn("useradd dbuser failed")
+                self._dbuser_created = False
 
-            # SSH authorized_keys for appuser
-            ssh_dir = Path("/home/appuser/.ssh")
-            self._ensure_dir(ssh_dir)
-            if not self.dry_run:
-                self.run_cmd(["chown", "appuser:appgroup", str(ssh_dir)],
-                             check=False)
-                self.run_cmd(["chmod", "0700", str(ssh_dir)], check=False)
-            self._write_managed_text(
-                "/home/appuser/.ssh/authorized_keys",
-                "# Driftify synthetic SSH key — NOT a real key\n"
-                "ssh-rsa AAAAB3NzaC1yc2EDRIFTIFYFAKEKEY0000EXAMPLEONLY"
-                "0000000000 appuser@driftify-demo\n",
-                mode=0o600,
-            )
-            if not self.dry_run:
-                self.run_cmd(
-                    ["chown", "appuser:appgroup",
-                     "/home/appuser/.ssh/authorized_keys"],
-                    check=False,
+            if self._appuser_created:
+                # Sudoers rule
+                self._write_managed_text(
+                    "/etc/sudoers.d/appusers",
+                    "# sudoers rules — driftify synthetic fixture\n"
+                    "appuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart myapp\n"
+                    "appuser ALL=(ALL) NOPASSWD: /usr/bin/systemctl status myapp\n",
+                    mode=0o440,
                 )
+
+                # SSH authorized_keys for appuser
+                ssh_dir = Path("/home/appuser/.ssh")
+                self._ensure_dir(ssh_dir)
+                if not self.dry_run:
+                    self.run_cmd(["chown", "appuser:appgroup", str(ssh_dir)],
+                                 check=False)
+                    self.run_cmd(["chmod", "0700", str(ssh_dir)], check=False)
+                self._write_managed_text(
+                    "/home/appuser/.ssh/authorized_keys",
+                    "# Driftify synthetic SSH key — NOT a real key\n"
+                    "ssh-rsa AAAAB3NzaC1yc2EDRIFTIFYFAKEKEY0000EXAMPLEONLY"
+                    "0000000000 appuser@driftify-demo\n",
+                    mode=0o600,
+                )
+                if not self.dry_run:
+                    self.run_cmd(
+                        ["chown", "appuser:appgroup",
+                         "/home/appuser/.ssh/authorized_keys"],
+                        check=False,
+                    )
 
         if self.needs_profile("kitchen-sink"):
             # Rootless container user mappings
@@ -1356,7 +1367,7 @@ domain=INTERNAL
                 "[Install]\n"
                 "WantedBy=default.target\n",
             )
-            if not self.dry_run:
+            if not self.dry_run and self._appuser_created:
                 self.run_cmd(
                     ["chown", "-R", "appuser:appgroup",
                      str(user_quadlet_dir.parent.parent.parent)],
