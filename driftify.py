@@ -1707,7 +1707,9 @@ domain=INTERNAL
                 text=True,
             )
             captured_lines: list[str] = []
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                _warn("yoinkc subprocess produced no output")
+                return
             for line in proc.stdout:
                 if not self.quiet:
                     print(line, end="", flush=True)
