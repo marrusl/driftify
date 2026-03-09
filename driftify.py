@@ -61,7 +61,7 @@ RPMFUSION_URL = "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-releas
 
 RPMFUSION_PACKAGES = {
     "minimal": ["x264", "x265"],
-    "standard": ["chromaprint-tools"],
+    "standard": ["chromaprint-tools", "unrar"],
     "kitchen-sink": ["ffmpeg"],
 }
 

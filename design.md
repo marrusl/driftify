@@ -93,7 +93,7 @@ This is the core of the design. Each section maps to a yoinkc inspector and spec
 | Enable EPEL repo (EL) or RPM Fusion Free (Fedora) | Additional repo beyond base | minimal |
 | `dnf install` ~10 base-repo packages (httpd, nginx, vim-enhanced, tmux, jq, etc.) | Added packages vs. base image | minimal |
 | `dnf install` ~3 EPEL packages (htop, bat, etc.) — folded into base install on Fedora | Cross-repo packages | minimal |
-| `dnf install` RPM Fusion packages on Fedora (x264, x265 at minimal, chromaprint-tools at standard, ffmpeg at kitchen-sink) | Third-party repo packages | varies |
+| `dnf install` RPM Fusion packages on Fedora (x264, x265 at minimal, chromaprint-tools and unrar at standard, ffmpeg at kitchen-sink) | Third-party repo packages | varies |
 | `dnf install` then `dnf remove` a package (e.g., `words`) | dnf history ghost — installed-then-removed package | standard |
 | `dnf install` ~10 more packages across profiles | Larger package delta, more realistic Containerfile | standard |
 | `dnf install` development tools (gcc, make, kernel-devel) | Build dependencies that shouldn't be in prod image | kitchen-sink |
