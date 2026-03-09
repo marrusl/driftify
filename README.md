@@ -63,8 +63,8 @@ Profiles are cumulative: `standard` includes everything in `minimal`, and `kitch
 
 Each section maps to a yoinkc inspector:
 
-- 📦 **rpm** → EPEL repo, base + EPEL packages, ghost package (install-then-remove)
-- ⚙️ **services** → Enable httpd/nginx, disable kdump, mask bluetooth
+- 📦 **rpm** → Repo setup (EPEL on EL, RPM Fusion Free on Fedora), base + extra-repo packages, RPM Fusion packages (ffmpeg, unrar, chromaprint-tools), ghost package (install-then-remove)
+- ⚙️ **services** → Enable httpd/nginx, disable kdump, mask bluetooth, drop-in overrides (httpd at standard, nginx at kitchen-sink)
 - 🔧 **config** → Modified RPM-owned configs, unowned app configs, orphaned configs
 - 🌐 **network** → Firewalld rules, custom zones, /etc/hosts entries, NM profiles, proxy
 - 💾 **storage** → NFS/CIFS fstab entries, app data dirs under /var
@@ -83,7 +83,7 @@ Each section maps to a yoinkc inspector:
 - **Per-section skip flags** → `--skip-SECTION` to leave individual categories untouched.
 - **Dry-run mode** → `--dry-run` prints every command without executing anything.
 - **Run record** → writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps.
-- **OS auto-detection** → reads `/etc/os-release` to select the correct EPEL URL and adapt package names for EL9, EL10, and Fedora (EPEL skipped on Fedora; packages are in the default repos).
+- **OS auto-detection** → reads `/etc/os-release` to adapt repo setup and package lists for EL9, EL10, and Fedora. On RHEL/CentOS, EPEL is enabled; on Fedora, RPM Fusion Free replaces EPEL and EPEL packages are folded into the base install. RHEL-only packages (`insights-client`, `rhc`, etc.) are filtered out on Fedora.
 - **Idempotent** → safe to run twice without breaking the system.
 - **Fake secrets** → plants realistic-looking but obviously synthetic credentials (AWS keys, PEM blocks, DB connection strings) to exercise yoinkc's redaction.
 - **Human-readable output** → colored section banners with Nerd Font icons and step counters. Degrades gracefully to plain text when stdout is not a TTY.
@@ -116,4 +116,4 @@ python3 -m unittest discover -s tests -v
 | CentOS Stream 10 | ✅ Tested |
 | RHEL 9.6+ | ✅ Tested |
 | RHEL 10 | ✅ Tested |
-| Fedora | ✅ Tested |
+| Fedora | ✅ Tested (RPM Fusion Free instead of EPEL) |

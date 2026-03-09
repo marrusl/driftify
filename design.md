@@ -2,7 +2,7 @@
 
 ## Purpose
 
-driftify is a companion tool to yoinkc. It runs on a fresh RHEL or CentOS Stream install (9.x or 10.x) and applies a curated set of system modifications that exercise every yoinkc inspector. This serves three goals:
+driftify is a companion tool to yoinkc. It runs on a fresh RHEL, CentOS Stream (9.x or 10.x), or Fedora install and applies a curated set of system modifications that exercise every yoinkc inspector. This serves three goals:
 
 1. **Demo environments.** Run driftify, then run yoinkc, and you get a compelling demonstration with real findings across every category — packages, configs, services, containers, non-RPM software, secrets, the works.
 2. **Development testing.** Every yoinkc code path that detects something needs a system where that something exists. driftify is the fixture. When you add a new detection capability to yoinkc, you add a corresponding drift to driftify.
@@ -41,21 +41,24 @@ driftify detects the host's OS from `/etc/os-release` and adapts:
 
 ```python
 # Parsed from /etc/os-release
-os_id       # "rhel" or "centos"
-os_version  # "9.4", "9", "10.0", "10", etc.
-os_major    # 9 or 10 (integer)
+os_id       # "rhel", "centos", or "fedora"
+os_version  # "9.4", "9", "10.0", "10", "41", etc.
+os_major    # 9, 10, 41, etc. (integer)
 ```
 
-Most driftify operations are identical across RHEL 9 and 10 — the same packages, configs, and system commands work on both. Where they differ:
+Most driftify operations are identical across RHEL 9, 10, and Fedora — the same packages, configs, and system commands work on all three. Where they differ:
 
 | Area | What varies | How driftify handles it |
 |---|---|---|
-| EPEL URL | Different RPM per major version | Version-keyed URL map |
-| Package names | Occasional renames between majors (rare) | Version-conditional package lists; fallback to `dnf install --skip-unavailable` with a warning for packages that don't exist on the detected version |
+| Third-party repo | EPEL on RHEL/CentOS (version-keyed URL); RPM Fusion Free on Fedora (version-keyed URL) | `_is_fedora()` branch selects the right repo |
+| EPEL packages on Fedora | htop, bat, fd-find, etc. ship in the default Fedora repos | EPEL package lists are folded into the base install on Fedora |
+| RHEL-only packages | `insights-client`, `rhc`, `epel-release`, `initscripts-*` don't exist on Fedora | `_RHEL_ONLY_PACKAGES` set is filtered out when `os_id == "fedora"` |
+| RPM Fusion packages | ffmpeg, unrar, chromaprint-tools require RPM Fusion Free on Fedora | `RPMFUSION_PACKAGES` dict, installed only on Fedora after enabling the repo |
+| Package names | Occasional renames between majors (rare) | `dnf install --setopt=strict=0` with a warning for packages that don't exist on the detected version |
 | SELinux policy | Module compilation tools may differ | Detect `checkmodule`/`semodule_package` availability before attempting |
-| Default service set | Some services added/removed between versions | driftify only enables/disables services it explicitly installs, so base-image defaults don't matter |
+| Default service set | Some services added/removed between versions (e.g. kdump absent on Fedora minimal) | driftify checks unit existence via `systemctl cat` before disabling/masking |
 
-The principle: driftify should work on RHEL/CentOS Stream 9.x and 10.x without modification. If a specific package or operation isn't available on a given version, it logs a warning and skips that item rather than failing.
+The principle: driftify should work on RHEL/CentOS Stream 9.x, 10.x, and recent Fedora releases without modification. If a specific package or operation isn't available on a given version, it logs a warning and skips that item rather than failing.
 
 It sources a config file (`driftify.conf`) if present, but works entirely with built-in defaults if not. The config file is for overriding things like which packages to install or which fake secrets to plant — useful for customizing demo scenarios without forking the script.
 
@@ -87,12 +90,15 @@ This is the core of the design. Each section maps to a yoinkc inspector and spec
 
 | What driftify does | What yoinkc should detect | Profile |
 |---|---|---|
-| Enable EPEL repo | Additional repo beyond base | minimal |
+| Enable EPEL repo (EL) or RPM Fusion Free (Fedora) | Additional repo beyond base | minimal |
 | `dnf install` ~10 base-repo packages (httpd, nginx, vim-enhanced, tmux, jq, etc.) | Added packages vs. base image | minimal |
-| `dnf install` ~3 EPEL packages (htop, bat, etc.) | Cross-repo packages | minimal |
+| `dnf install` ~3 EPEL packages (htop, bat, etc.) — folded into base install on Fedora | Cross-repo packages | minimal |
+| `dnf install` RPM Fusion packages on Fedora (ffmpeg at minimal, unrar at standard, chromaprint-tools at kitchen-sink) | Third-party repo packages | varies |
 | `dnf install` then `dnf remove` a package (e.g., `words`) | dnf history ghost — installed-then-removed package | standard |
 | `dnf install` ~10 more packages across profiles | Larger package delta, more realistic Containerfile | standard |
 | `dnf install` development tools (gcc, make, kernel-devel) | Build dependencies that shouldn't be in prod image | kitchen-sink |
+
+On Fedora, the `_RHEL_ONLY_PACKAGES` set (`epel-release`, `initscripts-rename-device`, `initscripts-service`, `insights-client`, `rhc`) guards against accidentally installing RHEL-specific packages; any package in this set that appears in a profile's install list is excluded when `os_id == "fedora"`.
 
 The installed packages are chosen to be small, fast to install, and useful for other driftify operations (e.g., httpd gets installed so we can modify its config; python3-pip gets installed so we can create pip venvs).
 
@@ -102,8 +108,10 @@ The installed packages are chosen to be small, fast to install, and useful for o
 |---|---|---|
 | `systemctl enable httpd` | Non-default enabled service | minimal |
 | `systemctl enable nginx` | Second non-default enabled service | minimal |
-| `systemctl disable kdump` | Default service disabled | minimal |
+| `systemctl disable kdump` (if present) | Default service disabled | minimal |
 | `systemctl mask bluetooth` (if present) | Masked service | standard |
+| Drop-in override `httpd.service.d/override.conf` (`TimeoutStartSec=600`, `LimitNOFILE=65535`) | systemd drop-in override for service tuning | standard |
+| Drop-in override `nginx.service.d/override.conf` (`LimitNOFILE=131072`, `ExecStartPost` hook) | systemd drop-in with post-start hook | kitchen-sink |
 | Enable generated timers (see Scheduled Tasks) | Timer enablement | standard |
 
 ### Config Inspector
@@ -538,11 +546,11 @@ This summary directly maps to what yoinkc should find. During development, you c
 ## Dependencies
 
 driftify requires:
-- Python 3 (present on minimal RHEL/CentOS Stream 9 and 10 installs)
+- Python 3 (present on minimal RHEL/CentOS Stream 9 and 10 installs, and Fedora)
 - Root access
 - Network access for:
   - `dnf install` (requires configured repos)
-  - EPEL repo setup (version-appropriate URL selected automatically)
+  - EPEL repo setup on EL, or RPM Fusion Free on Fedora (version-appropriate URL selected automatically)
   - pip package installation
   - npm package installation (requires nodejs, installed via dnf)
   - Binary downloads from GitHub (for Go binary in standard/minimal profiles)
@@ -557,7 +565,8 @@ Everything driftify creates, so you can audit it at a glance:
 
 ```
 /etc/driftify.stamp                              # Stamp file (all profiles)
-/etc/yum.repos.d/epel*.repo                      # EPEL repo (via dnf install)
+/etc/yum.repos.d/epel*.repo                      # EPEL repo on EL (via dnf install)
+/etc/yum.repos.d/rpmfusion-free*.repo            # RPM Fusion Free on Fedora (via dnf install)
 /etc/myapp/                                       # Application config dir
 /etc/myapp/app.conf                              # App config with fake secrets
 /etc/myapp/database.yml                          # DB config with fake creds
@@ -572,6 +581,8 @@ Everything driftify creates, so you can audit it at a glance:
 /etc/audit/rules.d/driftify.rules                # Audit rules
 /etc/cron.d/backup-daily                         # Cron job
 /etc/cron.daily/cleanup.sh                       # Cron daily script
+/etc/systemd/system/httpd.service.d/override.conf # httpd drop-in (standard+)
+/etc/systemd/system/nginx.service.d/override.conf # nginx drop-in (kitchen-sink)
 /etc/systemd/system/myapp-report.timer           # Custom systemd timer
 /etc/systemd/system/myapp-report.service         # Timer's service unit
 /etc/containers/systemd/webapp.container         # Quadlet: webapp (Image, Ports, Env, Volumes, Network)
@@ -612,8 +623,9 @@ Everything driftify creates, so you can audit it at a glance:
 
 ```
 Services enabled: httpd, nginx
-Services disabled: kdump
+Services disabled: kdump (if present)
 Services masked: bluetooth (standard+, if present)
+Drop-in overrides: httpd (standard+), nginx (kitchen-sink)
 SELinux booleans: httpd_can_network_connect=on, httpd_can_network_relay=on (standard+)
 SELinux modules: myapp (kitchen-sink)
 Users: appuser (1001), dbuser (1002, standard+)
@@ -638,7 +650,7 @@ Modules: br_netfilter loaded (standard+)
 
 ## Future Work
 
-**CI integration.** A GitHub Actions workflow that provisions a CentOS Stream 9 (and eventually 10) VM, runs driftify, runs yoinkc, and validates the output contains expected findings. This is the regression test harness. Matrix testing across OS versions ensures neither tool silently breaks on a version it claims to support.
+**CI integration.** A GitHub Actions workflow that provisions CentOS Stream 9, CentOS Stream 10, and Fedora VMs, runs driftify, runs yoinkc, and validates the output contains expected findings. This is the regression test harness. Matrix testing across OS versions ensures neither tool silently breaks on a version it claims to support.
 
 **Parameterized scenarios.** Config file support for defining specific drift scenarios: "I want a system that looks like a web server" vs. "I want a system that looks like a database server" vs. "I want a system that looks like a Kubernetes node." Each scenario would select different packages, configs, and services.
 
