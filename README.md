@@ -70,7 +70,7 @@ Profiles are cumulative: `standard` includes everything in `minimal`, and `kitch
 
 Each section maps to a yoinkc inspector:
 
-- 📦 **rpm** → Repo setup (EPEL on EL, RPM Fusion Free on Fedora), base + extra-repo packages, RPM Fusion packages (ffmpeg, unrar, chromaprint-tools), ghost package (install-then-remove)
+- 📦 **rpm** → Repo setup (EPEL on EL, RPM Fusion Free on Fedora), base + extra-repo packages, RPM Fusion packages (x264/x265 at minimal, chromaprint-tools at standard, ffmpeg at kitchen-sink), ghost package (install-then-remove)
 - ⚙️ **services** → Enable httpd/nginx, disable kdump, mask bluetooth, drop-in overrides (httpd at standard, nginx at kitchen-sink)
 - 🔧 **config** → Modified RPM-owned configs, unowned app configs, orphaned configs
 - 🌐 **network** → Firewalld rules, custom zones, /etc/hosts entries, NM profiles, proxy

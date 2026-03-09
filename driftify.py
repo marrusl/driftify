@@ -60,9 +60,9 @@ EPEL_PACKAGES = {
 RPMFUSION_URL = "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{major}.noarch.rpm"
 
 RPMFUSION_PACKAGES = {
-    "minimal": ["ffmpeg"],
-    "standard": ["unrar"],
-    "kitchen-sink": ["chromaprint-tools"],
+    "minimal": ["x264", "x265"],
+    "standard": ["chromaprint-tools"],
+    "kitchen-sink": ["ffmpeg"],
 }
 
 _RHEL_ONLY_PACKAGES = {
