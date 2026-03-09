@@ -8,9 +8,16 @@ driftify is the fixture half of the yoinkc development workflow: run driftify on
 
 ## Quick start
 
+Download and prepare:
+
 ```bash
 curl -LO https://raw.githubusercontent.com/marrusl/driftify/main/driftify.py
 chmod +x driftify.py
+```
+
+Run (with any CLI args from the options below):
+
+```bash
 sudo ./driftify.py                    # standard profile
 ```
 
