@@ -42,12 +42,12 @@ BASE_PACKAGES = {
     "standard": [
         "rsync", "lsof", "strace", "tcpdump", "nmap-ncat",
         "bash-completion", "man-pages", "info", "tree", "unzip", "at",
-        "nodejs",
+        "nodejs", "policycoreutils-python-utils",
     ],
     "kitchen-sink": [
         "gcc", "make", "kernel-devel", "gdb", "valgrind",
         "cmake", "autoconf", "automake", "libtool", "pkgconfig",
-        "checkpolicy", "policycoreutils-python-utils",
+        "checkpolicy",
     ],
 }
 
