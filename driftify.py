@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""driftify — apply synthetic drift to a fresh RHEL/CentOS Stream 9 or 10 system.
+"""driftify — apply synthetic drift to a fresh RHEL/CentOS Stream or Fedora system.
 
 Companion tool to yoinkc.  Runs on a clean host and applies curated system
 modifications so that every yoinkc inspector has something to detect.
@@ -55,6 +55,22 @@ EPEL_PACKAGES = {
     "minimal": ["htop", "bat"],
     "standard": ["the_silver_searcher", "fd-find"],
     "kitchen-sink": ["fzf", "ripgrep", "hyperfine"],
+}
+
+RPMFUSION_URL = "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-{major}.noarch.rpm"
+
+RPMFUSION_PACKAGES = {
+    "minimal": ["ffmpeg"],
+    "standard": ["unrar"],
+    "kitchen-sink": ["chromaprint-tools"],
+}
+
+_RHEL_ONLY_PACKAGES = {
+    "epel-release",
+    "initscripts-rename-device",
+    "initscripts-service",
+    "insights-client",
+    "rhc",
 }
 
 GHOST_PACKAGE = "words"
@@ -199,8 +215,10 @@ def detect_os() -> tuple:
         _error(f"Cannot parse VERSION_ID '{version_id}' from /etc/os-release")
         sys.exit(1)
 
-    if os_id not in ("rhel", "centos") or os_major not in (9, 10):
-        _warn(f"Detected {os_id} {version_id} — driftify targets RHEL/CentOS Stream 9 or 10")
+    if os_id == "fedora":
+        pass  # any recent Fedora release is fine
+    elif os_id not in ("rhel", "centos") or os_major not in (9, 10):
+        _warn(f"Detected {os_id} {version_id} — driftify targets RHEL/CentOS Stream 9/10 or Fedora")
 
     return os_id, os_major
 
@@ -425,19 +443,13 @@ class Driftify:
                   if s in self._IMPLEMENTED and s not in self.skip]
 
         if "rpm" in active:
-            pkg_count = sum(
-                len(BASE_PACKAGES.get(lvl, []))
-                for lvl in PROFILES if self.needs_profile(lvl)
-            )
-            epel_count = sum(
-                len(EPEL_PACKAGES.get(lvl, []))
-                for lvl in PROFILES if self.needs_profile(lvl)
-            )
+            _base, _extra, total = self._rpm_package_counts()
+            repo_label = "RPM Fusion" if self._is_fedora() else "EPEL"
             tiers = " + standard" if self.needs_profile("standard") else ""
             ghost = ", ghost entry" if self.needs_profile("standard") else ""
             lines.append(
-                f"Install ~{pkg_count + epel_count} packages "
-                f"(EPEL + base{tiers}{ghost})"
+                f"Install ~{total} packages "
+                f"({repo_label} + base{tiers}{ghost})"
             )
 
         if "services" in active:
@@ -619,6 +631,33 @@ class Driftify:
 
     # ── RPM / Packages ────────────────────────────────────────────────────
 
+    def _is_fedora(self) -> bool:
+        return self.os_id == "fedora"
+
+    def _rpm_package_counts(self) -> tuple:
+        """Return (base, extra_repo, total) package counts for the active profile.
+
+        On RHEL/CentOS, extra_repo is the EPEL package count.
+        On Fedora, extra_repo is the RPM Fusion count (EPEL packages are
+        folded into base, RHEL-only packages are subtracted).
+        """
+        active_levels = [lvl for lvl in PROFILES if self.needs_profile(lvl)]
+        if self._is_fedora():
+            base = sum(
+                len([p for p in BASE_PACKAGES.get(lvl, [])
+                     if p not in _RHEL_ONLY_PACKAGES])
+                + len(EPEL_PACKAGES.get(lvl, []))
+                for lvl in active_levels
+            )
+            extra = sum(
+                len(RPMFUSION_PACKAGES.get(lvl, []))
+                for lvl in active_levels
+            )
+        else:
+            base = sum(len(BASE_PACKAGES.get(lvl, [])) for lvl in active_levels)
+            extra = sum(len(EPEL_PACKAGES.get(lvl, [])) for lvl in active_levels)
+        return base, extra, base + extra
+
     def drift_rpm(self) -> None:
         if "rpm" in self.skip:
             _skip("Skipping RPM section (--skip-rpm)")
@@ -626,19 +665,28 @@ class Driftify:
 
         self._next_step("rpm")
 
-        # EPEL repo — all profiles
-        epel_url = EPEL_URLS.get(self.os_major)
-        if epel_url:
-            _info(f"{_I.GLOBE}  Enabling EPEL for EL{self.os_major}")
-            self.run_cmd(["dnf", "install", "-y", epel_url], check=False)
+        if self._is_fedora():
+            rpmfusion_url = RPMFUSION_URL.format(major=self.os_major)
+            _info(f"{_I.GLOBE}  Enabling RPM Fusion Free for Fedora {self.os_major}")
+            self.run_cmd(["dnf", "install", "-y", rpmfusion_url], check=False)
         else:
-            _warn(f"No EPEL URL for EL{self.os_major} — skipping EPEL")
+            epel_url = EPEL_URLS.get(self.os_major)
+            if epel_url:
+                _info(f"{_I.GLOBE}  Enabling EPEL for EL{self.os_major}")
+                self.run_cmd(["dnf", "install", "-y", epel_url], check=False)
+            else:
+                _warn(f"No EPEL URL for EL{self.os_major} — skipping EPEL")
 
-        # Base-repo packages, cumulative across profile levels
+        # Base-repo packages, cumulative across profile levels.
+        # On Fedora the EPEL package list is folded in (they ship in the
+        # default repos) and RHEL-only packages are filtered out.
         for level in PROFILES:
             if not self.needs_profile(level):
                 break
-            pkgs = BASE_PACKAGES.get(level, [])
+            pkgs = list(BASE_PACKAGES.get(level, []))
+            if self._is_fedora():
+                pkgs = [p for p in pkgs if p not in _RHEL_ONLY_PACKAGES]
+                pkgs += EPEL_PACKAGES.get(level, [])
             if pkgs:
                 _info(f"{_I.DOWNLOAD}  Installing base packages ({level}): "
                       f"{', '.join(pkgs)}")
@@ -647,18 +695,32 @@ class Driftify:
                     check=False,
                 )
 
-        # EPEL packages, cumulative
-        for level in PROFILES:
-            if not self.needs_profile(level):
-                break
-            pkgs = EPEL_PACKAGES.get(level, [])
-            if pkgs:
-                _info(f"{_I.DOWNLOAD}  Installing EPEL packages ({level}): "
-                      f"{', '.join(pkgs)}")
-                self.run_cmd(
-                    ["dnf", "install", "-y", "--setopt=strict=0"] + pkgs,
-                    check=False,
-                )
+        if self._is_fedora():
+            # RPM Fusion packages, cumulative
+            for level in PROFILES:
+                if not self.needs_profile(level):
+                    break
+                pkgs = RPMFUSION_PACKAGES.get(level, [])
+                if pkgs:
+                    _info(f"{_I.DOWNLOAD}  Installing RPM Fusion packages ({level}): "
+                          f"{', '.join(pkgs)}")
+                    self.run_cmd(
+                        ["dnf", "install", "-y", "--setopt=strict=0"] + pkgs,
+                        check=False,
+                    )
+        else:
+            # EPEL packages, cumulative
+            for level in PROFILES:
+                if not self.needs_profile(level):
+                    break
+                pkgs = EPEL_PACKAGES.get(level, [])
+                if pkgs:
+                    _info(f"{_I.DOWNLOAD}  Installing EPEL packages ({level}): "
+                          f"{', '.join(pkgs)}")
+                    self.run_cmd(
+                        ["dnf", "install", "-y", "--setopt=strict=0"] + pkgs,
+                        check=False,
+                    )
 
         # Ghost package: install, drop orphaned config, remove (standard+)
         # This creates a dnf history entry AND an unowned /etc config file,
@@ -1793,16 +1855,11 @@ domain=INTERNAL
                 f"({self.profile} profile, {m}m {s:02d}s)")
 
         # ── RPM ──────────────────────────────────────────────────────────────
-        pkg_count = sum(
-            len(BASE_PACKAGES.get(lvl, []))
-            for lvl in PROFILES if self.needs_profile(lvl)
-        )
-        epel_count = sum(
-            len(EPEL_PACKAGES.get(lvl, []))
-            for lvl in PROFILES if self.needs_profile(lvl)
-        )
         if "rpm" not in self.skip:
-            rpm_parts = [f"{pkg_count + epel_count} packages requested", "1 repo added"]
+            _base, _extra, total = self._rpm_package_counts()
+            repo_name = "RPM Fusion" if self._is_fedora() else "EPEL"
+            rpm_parts = [f"{total} packages requested",
+                         f"1 repo added ({repo_name})"]
             if self.needs_profile("standard"):
                 rpm_parts += ["1 ghost package", "1 orphaned config"]
             rpm_str = ", ".join(rpm_parts)
@@ -1958,7 +2015,7 @@ domain=INTERNAL
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="driftify",
-        description="Apply synthetic drift to a RHEL/CentOS Stream 9 or 10 system.",
+        description="Apply synthetic drift to a RHEL/CentOS Stream or Fedora system.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:

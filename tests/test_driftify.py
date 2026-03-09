@@ -439,6 +439,23 @@ class TestConfirmation(DriftifyTestCase):
             self.assertIn("Wrote", output)
 
 
+class TestRhelEpelPath(DriftifyTestCase):
+    """Verify the RHEL/CentOS path still works correctly after the Fedora refactor."""
+
+    def test_drift_rpm_uses_epel_not_rpmfusion(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("Enabling EPEL", output)
+        self.assertIn("Installing EPEL packages", output)
+        self.assertNotIn("RPM Fusion", output)
+        self.assertNotIn("rpmfusion", output)
+
+
 class TestSummary(DriftifyTestCase):
 
 
@@ -921,6 +938,139 @@ class TestSELinux(DriftifyTestCase):
         self.assertIn("httpd_can_network_connect", output)
         self.assertIn("httpd_can_network_relay", output)
         self.assertIn("/etc/audit/rules.d/driftify.rules", output)
+
+
+class TestFedoraSupport(DriftifyTestCase):
+    """Verify Fedora-specific behavior: RPM Fusion, no EPEL, package filtering."""
+
+    def setUp(self):
+        super().setUp()
+        driftify.detect_os = lambda: ("fedora", 41)
+
+    def test_driftify_accepts_fedora(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self.assertEqual(d.os_id, "fedora")
+        self.assertEqual(d.os_major, 41)
+
+    def test_drift_rpm_uses_rpmfusion_not_epel(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("RPM Fusion", output)
+        self.assertIn("rpmfusion", output)
+        self.assertNotIn("Enabling EPEL", output)
+        self.assertNotIn("Installing EPEL packages", output)
+
+    def test_drift_rpm_rpmfusion_url_contains_major_version(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        expected_url = driftify.RPMFUSION_URL.format(major=41)
+        self.assertIn(expected_url, buf.getvalue())
+
+    def test_drift_rpm_epel_packages_folded_into_base(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        for pkg in driftify.EPEL_PACKAGES["minimal"]:
+            self.assertIn(pkg, output)
+
+    def test_drift_rpm_installs_rpmfusion_packages(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("Installing RPM Fusion packages", output)
+        for pkg in driftify.RPMFUSION_PACKAGES["minimal"]:
+            self.assertIn(pkg, output)
+        for pkg in driftify.RPMFUSION_PACKAGES["standard"]:
+            self.assertIn(pkg, output)
+
+    def test_rhel_only_packages_filtered_on_fedora(self):
+        """Inject a RHEL-only package into BASE_PACKAGES and verify it's filtered."""
+        original = driftify.BASE_PACKAGES["minimal"]
+        try:
+            driftify.BASE_PACKAGES["minimal"] = original + ["insights-client"]
+            d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+            self._suppress.__exit__(None, None, None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                d.drift_rpm()
+            self._suppress.__enter__()
+            output = buf.getvalue()
+            self.assertNotIn("insights-client", output)
+            self.assertIn("httpd", output)
+        finally:
+            driftify.BASE_PACKAGES["minimal"] = original
+
+    def test_run_description_mentions_rpmfusion(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        lines = d._run_description()
+        rpm_lines = [l for l in lines if "Install" in l]
+        self.assertTrue(any("RPM Fusion" in l for l in rpm_lines))
+        self.assertFalse(any("EPEL" in l for l in rpm_lines))
+
+    def test_summary_mentions_rpmfusion(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d._t0 = __import__("time").monotonic()
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._print_summary()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn("RPM Fusion", output)
+        self.assertNotIn("EPEL", output)
+
+    def test_summary_package_count_includes_rpmfusion(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d._t0 = __import__("time").monotonic()
+        _base, _extra, expected_total = d._rpm_package_counts()
+
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._print_summary()
+        self._suppress.__enter__()
+        self.assertIn(f"{expected_total} packages requested", buf.getvalue())
+
+    def test_drift_rpm_kitchen_sink_installs_all_rpmfusion(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        for level in driftify.PROFILES:
+            for pkg in driftify.RPMFUSION_PACKAGES.get(level, []):
+                self.assertIn(pkg, output)
+
+    def test_drift_rpm_standard_folds_all_epel_into_base(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_rpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        for level in ("minimal", "standard"):
+            for pkg in driftify.EPEL_PACKAGES.get(level, []):
+                self.assertIn(pkg, output)
 
 
 class TestPrintSummary(DriftifyTestCase):
