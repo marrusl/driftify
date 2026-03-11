@@ -533,7 +533,7 @@ class Driftify:
         if "users" in active:
             usr = "Create appuser (UID 1001) + appgroup (GID 1001)"
             if self.needs_profile("standard"):
-                usr += ", dbuser (UID 1002), sudoers rule, SSH key"
+                usr += ", dbuser (UID 1002), shared developers group, sudoers rule, SSH key"
             if self.needs_profile("kitchen-sink"):
                 usr += ", subuid/subgid maps"
             lines.append(usr)
@@ -1274,6 +1274,20 @@ domain=INTERNAL
                 _warn("useradd dbuser failed")
                 self._dbuser_created = False
 
+            # Shared developers group with supplementary membership
+            _info(f"{_I.USERS}  Creating group developers (GID 1050) with appuser, dbuser")
+            self.run_cmd(["groupadd", "-g", "1050", "developers"], check=False)
+            if self._appuser_created:
+                self.run_cmd(
+                    ["usermod", "-a", "-G", "developers", "appuser"],
+                    check=False,
+                )
+            if self._dbuser_created:
+                self.run_cmd(
+                    ["usermod", "-a", "-G", "developers", "dbuser"],
+                    check=False,
+                )
+
             if self._appuser_created:
                 # Sudoers rule
                 self._write_managed_text(
@@ -1966,7 +1980,7 @@ domain=INTERNAL
         # ── Users ────────────────────────────────────────────────────────────
         if "users" not in self.skip:
             usr_n  = 1 + (1 if self.needs_profile("standard") else 0)
-            grp_n  = 1
+            grp_n  = 1 + (1 if self.needs_profile("standard") else 0)
             sudo_n = 1 if self.needs_profile("standard") else 0
             ssh_n  = 1 if self.needs_profile("standard") else 0
             usr_parts = []

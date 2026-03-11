@@ -619,6 +619,7 @@ class TestUsers(DriftifyTestCase):
         self._suppress.__enter__()
         output = buf.getvalue()
         self.assertIn("dbuser", output)
+        self.assertIn("developers", output)
         self.assertIn("/etc/sudoers.d/appusers", output)
         self.assertIn("/home/appuser/.ssh/authorized_keys", output)
 
@@ -1098,7 +1099,7 @@ class TestPrintSummary(DriftifyTestCase):
         self.assertIn("1 masked", output)
         # Users section should show users and groups
         self.assertIn("2 user(s)", output)
-        self.assertIn("1 group(s)", output)
+        self.assertIn("2 group(s)", output)
         # Scheduled section should list cron files
         self.assertIn("2 cron files", output)
 
