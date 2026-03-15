@@ -97,6 +97,19 @@ Each section maps to a yoinkc inspector:
 - **Interactive confirmation** → prints a plain-English summary of what will happen and asks `[y/N]` before touching anything. Use `-y` / `--yes` to bypass. Skipped automatically in `--dry-run` mode.
 - **yoinkc handoff** → `--run-yoinkc` downloads and runs `run-yoinkc.sh` immediately after drift is applied, writing artifacts to `--yoinkc-output`.
 
+## Fleet testing
+
+`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs yoinkc after each with a unique hostname, then aggregates the results into a fleet tarball. It's fully self-contained — curls down both `driftify.py` and the yoinkc scripts from GitHub.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/main/run-fleet-test.sh -o run-fleet-test.sh
+sudo bash run-fleet-test.sh
+```
+
+Since profiles are cumulative (minimal < standard < kitchen-sink), each successive tarball captures more drift. The fleet aggregation with `-p 67` naturally stratifies: minimal items appear on 3/3 hosts, standard-only on 2/3, kitchen-sink-only on 1/3.
+
+The output is a fleet tarball with Containerfile, HTML report (with prevalence badges), and merged snapshot — ready to open in a browser or pass to `yoinkc-refine`.
+
 ## Running tests
 
 ```bash
