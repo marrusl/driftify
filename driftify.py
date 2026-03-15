@@ -1784,7 +1784,7 @@ domain=INTERNAL
         _info(f"{_I.DATABASE}  Output: {self.yoinkc_output}")
 
         if self.dry_run:
-            _dry(f"curl {self._YOINKC_SCRIPT_URL} | sh -s -- {self.yoinkc_output}")
+            _dry(f"curl {self._YOINKC_SCRIPT_URL} | sh")
             return
 
         script_path = None
@@ -1800,9 +1800,9 @@ domain=INTERNAL
             # Stream stdout+stderr live so the user sees container progress,
             # but accumulate the output so we can check it on failure.
             if not self.quiet:
-                _info(f"Running: sh {script_path} {self.yoinkc_output}")
+                _info(f"Running: sh {script_path}")
             proc = subprocess.Popen(
-                ["sh", script_path, self.yoinkc_output],
+                ["sh", script_path],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
