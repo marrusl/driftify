@@ -6,12 +6,17 @@ cd "$(dirname "$0")"
 PROFILES=(minimal standard kitchen-sink)
 HOSTNAMES=(web-01 web-02 web-03)
 
+YOINKC_SCRIPT="$(mktemp)"
+curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc.sh -o "$YOINKC_SCRIPT"
+chmod +x "$YOINKC_SCRIPT"
+trap 'rm -f "$YOINKC_SCRIPT"' EXIT
+
 for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"
     hostname="${HOSTNAMES[$i]}"
     echo "=== Profile: $profile (hostname: $hostname) ==="
-    sudo ./driftify.py --profile "$profile"
-    YOINKC_HOSTNAME="$hostname" ../yoinkc/run-yoinkc.sh
+    sudo ./driftify.py -yq --profile "$profile"
+    YOINKC_HOSTNAME="$hostname" bash "$YOINKC_SCRIPT"
 done
 
 echo ""
