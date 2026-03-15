@@ -2021,7 +2021,7 @@ domain=INTERNAL
             _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
             _info(f"             or: curl -fsSL "
                   f"https://raw.githubusercontent.com/marrusl/yoinkc/main/"
-                  f"run-yoinkc.sh | sh")
+                  f"run-yoinkc.sh | sudo sh")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
