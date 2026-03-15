@@ -7,9 +7,12 @@ PROFILES=(minimal standard kitchen-sink)
 HOSTNAMES=(web-01 web-02 web-03)
 
 YOINKC_SCRIPT="$(mktemp)"
+FLEET_SCRIPT="$(mktemp)"
+FLEET_DIR="$(mktemp -d -t fleet-aggregate.XXXXXX)"
 curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc.sh -o "$YOINKC_SCRIPT"
+curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc-fleet.sh -o "$FLEET_SCRIPT"
 chmod +x "$YOINKC_SCRIPT"
-trap 'rm -f "$YOINKC_SCRIPT"' EXIT
+trap 'rm -f "$YOINKC_SCRIPT" "$FLEET_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
 for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"
@@ -20,10 +23,11 @@ for i in "${!PROFILES[@]}"; do
 done
 
 echo ""
-echo "=== Fleet tarballs ready ==="
-ls -1t *.tar.gz | head -3
+echo "=== Aggregating fleet ==="
+# shellcheck disable=SC2012
+ls -1t *.tar.gz | head -3 | xargs -I{} cp {} "$FLEET_DIR/"
+bash "$FLEET_SCRIPT" "$FLEET_DIR" -p 67
+
 echo ""
-echo "To aggregate on your workstation:"
-echo "  mkdir fleet-test && mv *.tar.gz fleet-test/"
-echo "  yoinkc-fleet aggregate ./fleet-test/ -p 67 -o merged.json"
-echo "  yoinkc --from-snapshot merged.json --output-dir /tmp/fleet-output"
+echo "=== Fleet tarball ==="
+realpath -- "$(ls -1t ./*.tar.gz | head -1)"
