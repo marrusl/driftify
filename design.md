@@ -399,6 +399,7 @@ This is a no-op (httpd_can_network_connect already grants this when enabled) but
 | Create group `appgroup` (GID 1001) and add appuser | Non-system group + membership | minimal |
 | Add sudoers rule in `/etc/sudoers.d/appusers` | Sudoers config for app users | standard |
 | Create SSH authorized_keys for appuser (fake key) | SSH key reference (flagged, not copied) | standard |
+| Create shared group `developers` (GID 1050) with appuser + dbuser as supplementary members | Shared group with supplementary membership | standard |
 | Set up subuid/subgid ranges for appuser | Rootless container user mapping | kitchen-sink |
 
 ### Secret Handling
@@ -494,7 +495,9 @@ Options:
   -y, --yes            Skip interactive confirmation prompt
   -q, --quiet          Show only section banners, warnings, and errors.
                        Does not suppress yoinkc output when --run-yoinkc is used.
+  --verbose            Reserved for future use (no effect today)
   --run-yoinkc         After applying drift, download and run run-yoinkc.sh
+  --yoinkc-output DIR  Output directory for yoinkc artifacts (default: ./yoinkc-output)
   --help               Show this help
 
 Examples:
@@ -504,6 +507,30 @@ Examples:
   sudo ./driftify.py --skip-nonrpm            # Standard, but skip non-RPM software
   sudo ./driftify.py --run-yoinkc             # Apply drift then hand off to yoinkc
 ```
+
+## Fleet Testing
+
+`run-fleet-test.sh` automates the full fleet test loop on a single VM. It is fully self-contained — it curls `driftify.py`, `run-yoinkc.sh`, and `run-yoinkc-fleet.sh` from GitHub so no local checkout is required.
+
+**What it does:**
+
+1. Runs driftify with all three profiles in sequence (minimal, standard, kitchen-sink).
+2. After each profile, runs yoinkc with a unique `YOINKC_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
+3. Aggregates the three host tarballs into a fleet tarball using `run-yoinkc-fleet.sh` with `-p 67` (67% prevalence threshold).
+
+**Usage:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/main/run-fleet-test.sh -o run-fleet-test.sh
+sudo bash run-fleet-test.sh
+```
+
+**What it produces:**
+
+- 3 host tarballs (one per profile/hostname), each containing a Containerfile, HTML report, and snapshot.
+- 1 fleet tarball with a merged snapshot, fleet HTML report (with prevalence badges), and Containerfile.
+
+Since profiles are cumulative (minimal < standard < kitchen-sink), each successive tarball captures more drift. The fleet aggregation with `-p 67` naturally stratifies: minimal items appear on 3/3 hosts, standard-only on 2/3, kitchen-sink-only on 1/3.
 
 ## Coverage Verification
 
@@ -541,7 +568,7 @@ This summary directly maps to what yoinkc should find. During development, you c
 
 **driftify does not test version-specific edge cases exhaustively.** It works on both RHEL/CentOS 9 and 10 by adapting to the detected version, but it doesn't maintain separate coverage maps per version. If a yoinkc detection path is version-specific, that should be tested in yoinkc's own test suite with version-pinned fixtures.
 
-**driftify does not handle multi-host scenarios.** It's a single-system tool. Fleet analysis testing (diffing multiple snapshots) would need a separate harness that runs driftify with variations across multiple VMs.
+**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `yoinkc-fleet`. See the Fleet Testing section below.
 
 ## Dependencies
 
@@ -629,7 +656,7 @@ Drop-in overrides: httpd (standard+), nginx (kitchen-sink)
 SELinux booleans: httpd_can_network_connect=on, httpd_can_network_relay=on (standard+)
 SELinux modules: myapp (kitchen-sink)
 Users: appuser (1001), dbuser (1002, standard+)
-Groups: appgroup (1001)
+Groups: appgroup (1001), developers (1050, standard+)
 Firewall: http, https, 8080/tcp added to default zone
 Sysctls: 6 values applied
 Modules: br_netfilter loaded (standard+)
@@ -654,4 +681,4 @@ Modules: br_netfilter loaded (standard+)
 
 **Parameterized scenarios.** Config file support for defining specific drift scenarios: "I want a system that looks like a web server" vs. "I want a system that looks like a database server" vs. "I want a system that looks like a Kubernetes node." Each scenario would select different packages, configs, and services.
 
-**Drift variations.** For fleet analysis testing: a mode that applies slight variations across runs (different package versions, slightly different configs) to simulate host drift within a role.
+**Drift variations.** For fleet analysis testing: a mode that applies slight variations across runs (different package versions, slightly different configs) to simulate host drift within a role. *Partially addressed:* `run-fleet-test.sh` provides cross-profile variation (minimal vs. standard vs. kitchen-sink), but true within-profile variation (e.g., same profile with randomized package subsets) is still future work.
