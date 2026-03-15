@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
 # Run all driftify profiles, yoinkc each, produce fleet-ready tarballs.
+# Self-contained: fetches all scripts from GitHub; no local checkout required.
 set -euo pipefail
-cd "$(dirname "$0")"
 
 PROFILES=(minimal standard kitchen-sink)
 HOSTNAMES=(web-01 web-02 web-03)
 
+DRIFTIFY_SCRIPT="$(mktemp)"
 YOINKC_SCRIPT="$(mktemp)"
 FLEET_SCRIPT="$(mktemp)"
 FLEET_DIR="$(mktemp -d -t fleet-aggregate.XXXXXX)"
+curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/refs/heads/main/driftify.py -o "$DRIFTIFY_SCRIPT"
 curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc.sh -o "$YOINKC_SCRIPT"
 curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc-fleet.sh -o "$FLEET_SCRIPT"
-chmod +x "$YOINKC_SCRIPT"
-trap 'rm -f "$YOINKC_SCRIPT" "$FLEET_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
+chmod +x "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT"
+trap 'rm -f "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT" "$FLEET_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
 for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"
     hostname="${HOSTNAMES[$i]}"
     echo "=== Profile: $profile (hostname: $hostname) ==="
-    sudo ./driftify.py -yq --profile "$profile"
+    sudo "$DRIFTIFY_SCRIPT" -yq --profile "$profile"
     YOINKC_HOSTNAME="$hostname" bash "$YOINKC_SCRIPT"
 done
 
