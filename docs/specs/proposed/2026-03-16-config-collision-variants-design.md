@@ -37,32 +37,36 @@ system default differs from both profile versions.
 ### 1. `/etc/ssh/sshd_config`
 
 **Standard** (existing — `drift_config`, `needs_profile("standard")`):
+Uses `_apply_directives()` for in-place key replacement:
 - `Port 2222`
 - `PermitRootLogin no`
 
 **Kitchen-sink** (new — `drift_config`, `needs_profile("kitchen-sink")`):
-Overwrite sshd_config with standard hardening PLUS:
-- `Port 2200`
-- `PermitRootLogin no`
+Uses `_apply_directives()` to override/add keys:
+- `Port 2200` (overrides standard's 2222)
 - `Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com`
 - `MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com`
 - `KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org`
 
+`PermitRootLogin no` is already set by standard and persists.
+
 ### 2. `/etc/chrony.conf`
 
-**Standard** (existing or new — `drift_config`,
+**Standard** (existing — `drift_config`,
 `needs_profile("standard")`):
-- Append `server time1.example.com iburst`
+Uses `_append_managed_block("chrony-servers", ...)` to add NTP servers.
 
 **Kitchen-sink** (new — `drift_config`,
 `needs_profile("kitchen-sink")`):
-- Overwrite the appended server line(s) with:
+Uses `_append_managed_block("chrony-servers-ks", ...)` with a
+**different marker** to add additional/different servers:
   `server time1.internal.corp iburst`
   `server time2.internal.corp iburst`
 
-Implementation: simplest approach is to re-read the file, replace the
-standard server line, and write back. Or append the kitchen-sink lines
-and remove the standard one via `sed`-style logic.
+The standard block (`chrony-servers`) stays. The kitchen-sink block
+(`chrony-servers-ks`) coexists with different content. The resulting
+file differs from the standard-only version because it has both
+blocks — producing a content-hash variant for fleet aggregation.
 
 ### 3. `/etc/httpd/conf/httpd.conf`
 
@@ -80,17 +84,35 @@ Since both append to the same file, the kitchen-sink version has all
 standard directives PLUS the additional ones — making the content
 different from the standard-only version.
 
-### 4. `/etc/myapp/app.conf`
+### 4. `/etc/myapp/database.conf`
 
-**Standard** (existing — `drift_config`,
+A new config file (not app.conf, which is created at minimal level
+and also modified by `drift_secrets`).
+
+**Standard** (new — `drift_config`,
 `needs_profile("standard")`):
-- Creates the app.conf with standard settings
+Create `/etc/myapp/database.conf` with:
+```ini
+[database]
+host = localhost
+port = 5432
+max_connections = 50
+log_level = info
+pool_size = 10
+```
 
 **Kitchen-sink** (new — `drift_config`,
 `needs_profile("kitchen-sink")`):
-- Overwrite with different values:
-  Higher `max_connections`, different `log_level` (e.g., `debug` vs
-  `info`), different `cache_size`, etc.
+Overwrite with production-tuned values:
+```ini
+[database]
+host = db.internal.corp
+port = 5432
+max_connections = 200
+log_level = debug
+pool_size = 50
+connection_timeout = 30
+```
 
 ### 5. `/etc/systemd/system/httpd.service.d/limits.conf`
 
@@ -105,23 +127,16 @@ different from the standard-only version.
 Note: if this drop-in already exists in `drift_services`, the
 kitchen-sink block just overwrites it. If not, both blocks create it.
 
-## Implementation Pattern
+## Implementation Notes
 
-For each file, the pattern is:
+- **sshd_config**: use `_apply_directives()` (in-place key replacement)
+- **chrony.conf**: use `_append_managed_block()` with a different marker
+- **httpd.conf**: use `_append_managed_block()` with a different marker
+- **database.conf**: use `_write_managed_text()` (full file write)
+- **limits.conf**: use `_write_file()` or equivalent (full file write)
 
-```python
-if self.needs_profile("standard"):
-    # existing or new standard-profile code
-    self._write_file("/etc/path/file.conf", standard_content)
-
-if self.needs_profile("kitchen-sink"):
-    # overwrite with kitchen-sink variant
-    self._write_file("/etc/path/file.conf", kitchen_sink_content)
-```
-
-For files that append (httpd.conf, chrony.conf), the kitchen-sink
-block should append additional directives rather than overwrite, so the
-content naturally differs from the standard-only version.
+Update `_run_description()` to reflect the new kitchen-sink operations
+for each affected drift method.
 
 ## Testing
 
@@ -132,5 +147,5 @@ content naturally differs from the standard-only version.
 - Run fleet test (`run-fleet-test.sh`) — verify yoinkc-fleet aggregate
   produces multi-variant entries for all 5 files
 - Open the fleet HTML report — verify variant grouping shows 2+
-  variants for sshd_config, chrony.conf, httpd.conf, app.conf,
+  variants for sshd_config, chrony.conf, httpd.conf, database.conf,
   limits.conf
