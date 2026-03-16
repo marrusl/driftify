@@ -68,6 +68,7 @@ what `--skip-*` flags were used originally. No interaction between
 - Remove created groups (`groupdel`): developers, etc.
 - Remove sudoers files from `/etc/sudoers.d/`
 - Remove planted SSH authorized_keys entries
+- Remove managed blocks from `/etc/subuid` and `/etc/subgid`
 
 ### undo_selinux
 
@@ -83,10 +84,12 @@ what `--skip-*` flags were used originally. No interaction between
 
 ### undo_nonrpm
 
-- Remove Python venvs (`/opt/myapp-venv/`, etc.)
-- Remove npm projects (`/opt/dashboard/`)
-- Remove git repos (`/opt/internal-tools/`)
-- Remove Go binaries (`/usr/local/bin/` installed binaries)
+- Remove Python venvs (verify actual path in `_create_venv()`)
+- Remove npm projects (verify actual path in `_create_npm_project()`)
+- Remove git repos (verify actual path in `_create_git_repo()`)
+- Remove Go binaries (verify actual path in `_install_go_binary()`)
+- Note: implementer must check actual paths created by each drift
+  method — do not guess paths, read them from the code
 
 ### undo_containers
 
@@ -96,16 +99,21 @@ what `--skip-*` flags were used originally. No interaction between
 
 ### undo_scheduled
 
-- Remove cron managed block from `/etc/crontab`
-- Remove at jobs
-- Stop and remove systemd timer units
+- Remove cron files: `/etc/cron.d/backup-daily`,
+  `/etc/cron.daily/cleanup.sh`, `/etc/cron.d/complex-job`
+- Remove `/etc/crontab` managed block
+- Remove at jobs (best-effort — `atrm` if job IDs known)
+- Stop and remove timer units: `myapp-report.timer`,
+  `myapp-report.service`
 - `systemctl daemon-reload`
 
 ### undo_storage
 
 - Remove fstab managed block
 - Remove autofs config entries
-- Unmount added mount points
+- Remove created directories: `/var/lib/myapp/`, `/var/log/myapp/`
+- Remove `cifs.creds` if created
+- Unmount added mount points (best-effort)
 
 ### undo_network
 
@@ -122,14 +130,23 @@ what `--skip-*` flags were used originally. No interaction between
   - `/etc/myapp/` (entire directory)
   - `/etc/myapp/database.conf`
   - Any other files created by `_write_managed_text()`
-- Restore directive-edited files: for files modified via
-  `_apply_directives()` (e.g., sshd_config), reversal is imperfect —
-  we can remove the added keys but can't restore original values of
-  overwritten keys. Acceptable residual.
+- Restore directive-edited files (sshd_config, httpd.conf, nginx.conf):
+  `_apply_directives()` calls `_write_managed_text()` which overwrites
+  the entire file. On undo, restore from RPM: `rpm -qf <path>` to find
+  owning package, then `dnf reinstall -y <package>` to restore the
+  original file. Simpler and more reliable than backup/restore.
+- Remove SSH-related firewall rules added by drift_config:
+  `firewall-cmd --permanent --remove-port=2222/tcp`
+  `firewall-cmd --permanent --remove-port=2200/tcp`
+  `firewall-cmd --reload`
+- Remove SSH SELinux port labels if semanage is available:
+  `semanage port -d -t ssh_port_t -p tcp 2222`
+  `semanage port -d -t ssh_port_t -p tcp 2200`
 
 ### undo_services
 
 - Stop and disable services started by driftify (httpd, nginx)
+- Re-enable kdump if it was disabled
 - Unmask services that were masked (bluetooth)
 - Remove drop-in files (`/etc/systemd/system/*.service.d/`)
 - `systemctl daemon-reload`
@@ -145,8 +162,9 @@ what `--skip-*` flags were used originally. No interaction between
 ## New Helper: `_remove_managed_block(path, marker)`
 
 Counterpart to `_append_managed_block()`. Reads the file, finds the
-marker-delimited block (`# BEGIN driftify managed block: {marker}` /
-`# END driftify managed block: {marker}`), strips it, writes back.
+marker-delimited block (`# BEGIN DRIFTIFY {marker}` /
+`# END DRIFTIFY {marker}`), strips it, writes back. Must match the
+actual marker format used by `_append_managed_block()`.
 Returns quietly if file doesn't exist or marker not found.
 
 ## Stamp File
