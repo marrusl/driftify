@@ -455,17 +455,17 @@ class Driftify:
         if "services" in active:
             svcs = "Enable httpd, nginx; disable kdump"
             if self.needs_profile("standard"):
-                svcs += "; mask bluetooth (if present); drop-in override for httpd"
+                svcs += "; mask bluetooth (if present); drop-in overrides for httpd (override.conf, limits.conf=8192)"
             if self.needs_profile("kitchen-sink"):
-                svcs += ", nginx"
+                svcs += ", nginx; limits.conf overwritten (LimitNOFILE=65535, LimitNPROC=4096)"
             lines.append(svcs)
 
         if "config" in active:
             cfgs = "Modify RPM-owned configs (httpd, nginx"
             if self.needs_profile("standard"):
-                cfgs += ", sshd, chrony"
+                cfgs += ", sshd Port\u21922222, chrony; create /etc/myapp/database.conf"
             if self.needs_profile("kitchen-sink"):
-                cfgs += ", limits, auditd"
+                cfgs += "; sshd Port\u21922200 + cipher/MAC/kex overrides; chrony corp NTP servers; httpd MaxRequestWorkers 512; database.conf overwritten; limits, auditd"
             cfgs += ") + drop /etc/myapp/ configs"
             lines.append(cfgs)
             if self.needs_profile("standard"):
@@ -474,6 +474,11 @@ class Driftify:
                     "PermitRootLogin \u2192 no "
                     "\u2014 firewall and SELinux label updated; "
                     "takes effect on next sshd restart or reboot"
+                )
+            if self.needs_profile("kitchen-sink"):
+                lines.append(
+                    f"{_I.WARN}  sshd_config Port further overridden \u2192 2200 (kitchen-sink); "
+                    "firewall and SELinux label updated for 2200"
                 )
 
         if "network" in active:
@@ -805,6 +810,14 @@ class Driftify:
                 "LimitNOFILE=65535\n",
             )
 
+            # limits.conf drop-in: establishes a baseline fd limit that
+            # kitchen-sink will overwrite, creating a cross-profile variant.
+            _info(f"{_I.WRENCH}  Writing httpd.service.d/limits.conf drop-in")
+            self._write_managed_text(
+                "/etc/systemd/system/httpd.service.d/limits.conf",
+                "[Service]\nLimitNOFILE=8192\n",
+            )
+
         if self.needs_profile("kitchen-sink"):
             # Drop-in override for nginx: higher fd limit and a post-start
             # deploy notification hook.
@@ -815,6 +828,16 @@ class Driftify:
                 "[Service]\n"
                 "LimitNOFILE=131072\n"
                 "ExecStartPost=/usr/local/bin/notify-deploy.sh\n",
+            )
+
+            # Overwrite standard's limits.conf with higher limits — this is
+            # the cross-profile collision that lets yoinkc detect 2 variants
+            # for httpd.service.d/limits.conf in fleet aggregation.
+            self._ensure_dir(Path("/etc/systemd/system/httpd.service.d"))
+            _info(f"{_I.WRENCH}  Overwriting httpd.service.d/limits.conf drop-in (kitchen-sink)")
+            self._write_managed_text(
+                "/etc/systemd/system/httpd.service.d/limits.conf",
+                "[Service]\nLimitNOFILE=65535\nLimitNPROC=4096\n",
             )
 
     # ── Config Files ───────────────────────────────────────────────────────
@@ -923,6 +946,17 @@ export LOG_LEVEL=info
 }
 """,
             )
+            # database.conf baseline — kitchen-sink will overwrite this with
+            # different values, creating a cross-profile variant for fleet testing.
+            self._write_managed_text(
+                "/etc/myapp/database.conf",
+                "[database]\n"
+                "host = localhost\n"
+                "port = 5432\n"
+                "max_connections = 50\n"
+                "log_level = info\n"
+                "pool_size = 10\n",
+            )
 
         if self.needs_profile("kitchen-sink"):
             self._append_managed_block(
@@ -933,6 +967,64 @@ export LOG_LEVEL=info
                 create_if_missing=False,
             )
             self._set_or_append_directive("/etc/audit/auditd.conf", "max_log_file", "max_log_file = 64")
+
+            # Override sshd port to 2200 (replaces standard's 2222) and
+            # add cipher/MAC/kex hardening — produces a cross-profile variant.
+            self._apply_directives("/etc/ssh/sshd_config", {
+                "Port":          "Port 2200",
+                "Ciphers":       "Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com",
+                "MACs":          "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com",
+                "KexAlgorithms": "KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org",
+            })
+            _info(f"{_I.GLOBE}  Opening 2200/tcp in firewalld for SSH (kitchen-sink port)")
+            self.run_cmd(
+                ["firewall-cmd", "--permanent", "--add-port=2200/tcp"],
+                check=False,
+            )
+            self.run_cmd(["firewall-cmd", "--reload"], check=False)
+            import shutil as _shutil_semanage
+            if _shutil_semanage.which("semanage"):
+                _info(f"{_I.SHIELD}  Adding ssh_port_t SELinux label for port 2200")
+                self.run_cmd(
+                    ["semanage", "port", "-a", "-t", "ssh_port_t", "-p", "tcp", "2200"],
+                    check=False,
+                )
+            else:
+                _warn("semanage not found — skipping ssh_port_t label for 2200"
+                      " (install policycoreutils-python-utils if needed)")
+
+            # Additional NTP servers (different from standard's public pool) —
+            # distinct marker keeps both blocks present, making the file differ
+            # from the standard-only version.
+            self._append_managed_block(
+                "/etc/chrony.conf",
+                "chrony-servers-ks",
+                "server time1.internal.corp iburst\n"
+                "server time2.internal.corp iburst",
+                create_if_missing=False,
+            )
+
+            # Append additional httpd directives — makes kitchen-sink httpd.conf
+            # content-hash distinct from standard/minimal for fleet comparison.
+            self._append_managed_block(
+                "/etc/httpd/conf/httpd.conf",
+                "httpd-ks",
+                "MaxRequestWorkers 512\n"
+                "ExtendedStatus On",
+                create_if_missing=False,
+            )
+
+            # Overwrite database.conf with production-tuned values.
+            self._write_managed_text(
+                "/etc/myapp/database.conf",
+                "[database]\n"
+                "host = db.internal.corp\n"
+                "port = 5432\n"
+                "max_connections = 200\n"
+                "log_level = debug\n"
+                "pool_size = 50\n"
+                "connection_timeout = 30\n",
+            )
 
     # ── Secrets ────────────────────────────────────────────────────────────
 
@@ -2014,6 +2106,9 @@ domain=INTERNAL
                   "Port changed to 2222, PermitRootLogin set to no.")
             _warn("         firewall-cmd and semanage updated for port 2222.")
             _warn("         Changes take effect on next sshd restart or reboot.")
+        if "config" not in self.skip and self.needs_profile("kitchen-sink"):
+            _warn("         Kitchen-sink: Port further overridden to 2200; "
+                  "firewall-cmd and semanage updated for port 2200.")
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
