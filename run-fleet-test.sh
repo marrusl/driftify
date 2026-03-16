@@ -20,7 +20,7 @@ for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"
     hostname="${HOSTNAMES[$i]}"
     echo "=== Profile: $profile (hostname: $hostname) ==="
-    sudo "$DRIFTIFY_SCRIPT" -yq --profile "$profile"
+    sudo "$DRIFTIFY_SCRIPT" --undo-first -yq --profile "$profile"
     YOINKC_HOSTNAME="$hostname" bash "$YOINKC_SCRIPT"
 done
 
