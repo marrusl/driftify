@@ -28,7 +28,7 @@ echo ""
 echo "=== Aggregating fleet ==="
 # shellcheck disable=SC2012
 ls -1t *.tar.gz | head -3 | xargs -I{} cp {} "$FLEET_DIR/"
-bash "$FLEET_SCRIPT" "$FLEET_DIR" -p 67
+bash "$FLEET_SCRIPT" "$FLEET_DIR" -p 66
 
 echo ""
 echo "=== Fleet tarball ==="
