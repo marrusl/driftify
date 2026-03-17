@@ -480,6 +480,14 @@ class Driftify:
             fh.writelines(new_lines)
         _info(f"Removed block '{marker}' from {path}")
 
+    def _check_command(self, cmd: str) -> bool:
+        """Return True if *cmd* is available on PATH; warn and return False otherwise."""
+        import shutil
+        if shutil.which(cmd):
+            return True
+        _warn(f"{cmd} not found — skipping (install the required package if needed)")
+        return False
+
     # ── confirmation ──────────────────────────────────────────────────────
 
     def _run_description(self) -> list:
@@ -500,7 +508,10 @@ class Driftify:
             ghost = ", ghost entry" if self.needs_profile("standard") else ""
             dnf_extra = ""
             if self.needs_profile("kitchen-sink"):
-                dnf_extra = ", postgresql:15 module stream, curl version lock"
+                dnf_extra = (
+                    ", postgresql:15 module stream, curl version lock"
+                    ", glibc.i686, duplicate package"
+                )
             lines.append(
                 f"Install ~{total} packages "
                 f"({repo_label} + base{tiers}{ghost}{dnf_extra})"
@@ -509,17 +520,30 @@ class Driftify:
         if "services" in active:
             svcs = "Enable httpd, nginx; disable kdump"
             if self.needs_profile("standard"):
-                svcs += "; mask bluetooth (if present); drop-in overrides for httpd (override.conf, limits.conf=8192)"
+                svcs += (
+                    "; tuned\u2192throughput-performance"
+                    "; mask bluetooth (if present)"
+                    "; drop-in overrides for httpd (override.conf, limits.conf=8192)"
+                )
             if self.needs_profile("kitchen-sink"):
                 svcs += ", nginx; limits.conf overwritten (LimitNOFILE=65535, LimitNPROC=4096)"
             lines.append(svcs)
 
         if "config" in active:
-            cfgs = "Modify RPM-owned configs (httpd, nginx"
+            cfgs = "Crypto policy\u2192FUTURE, locale\u2192en_GB.UTF-8, tz\u2192America/Chicago"
+            cfgs += "; modify RPM-owned configs (httpd, nginx"
             if self.needs_profile("standard"):
-                cfgs += ", sshd Port\u21922222, chrony; create /etc/myapp/database.conf"
+                cfgs += (
+                    ", sshd Port\u21922222, chrony; create /etc/myapp/database.conf"
+                    "; nsswitch +sss, SSSD/Kerberos, alternatives python3"
+                )
             if self.needs_profile("kitchen-sink"):
-                cfgs += "; sshd Port\u21922200 + cipher/MAC/kex overrides; chrony corp NTP servers; httpd MaxRequestWorkers 512; database.conf overwritten; limits, auditd"
+                cfgs += (
+                    "; sshd Port\u21922200 + cipher/MAC/kex overrides"
+                    "; chrony corp NTP servers; httpd MaxRequestWorkers 512"
+                    "; database.conf overwritten; limits, auditd"
+                    "; nsswitch +winbind"
+                )
             cfgs += ") + drop /etc/myapp/ configs"
             lines.append(cfgs)
             if self.needs_profile("standard"):
@@ -562,7 +586,7 @@ class Driftify:
                 nrpm += ", npm project (/opt/webapp/), git repo (/opt/tools/some-tool/)"
                 nrpm += ", deploy.sh script"
             if self.needs_profile("kitchen-sink"):
-                nrpm += ", mystery binary (stripped)"
+                nrpm += ", ruby + gems (bundler, sinatra), mystery binary (stripped)"
             lines.append(nrpm)
 
         if "containers" in active:
@@ -584,7 +608,11 @@ class Driftify:
         if "selinux" in active:
             sel = "Set httpd_can_network_connect=on"
             if self.needs_profile("standard"):
-                sel += ", httpd_can_network_relay=on, custom audit rules"
+                sel += (
+                    ", httpd_can_network_relay=on"
+                    ", fcontext httpd_sys_content_t on /srv/www"
+                    ", custom audit rules"
+                )
             if self.needs_profile("kitchen-sink"):
                 sel += ", install custom SELinux module"
             lines.append(sel)
@@ -736,6 +764,7 @@ class Driftify:
 
     def undo_nonrpm(self) -> None:
         _info("Undoing non-RPM software...")
+        self._undo_ruby_gems()
         self._remove_path("/opt/myapp/venv")
         self._remove_path("/usr/local/bin/driftify-probe")
         self._remove_path("/opt/webapp")
@@ -745,6 +774,7 @@ class Driftify:
 
     def undo_selinux(self) -> None:
         _info("Undoing SELinux...")
+        self._undo_selinux_fcontext()
         self.run_cmd(["setsebool", "-P", "httpd_can_network_connect", "off"], check=False)
         self.run_cmd(["setsebool", "-P", "httpd_can_network_relay", "off"], check=False)
         self.run_cmd(["semodule", "-r", "myapp"], check=False)
@@ -827,6 +857,11 @@ class Driftify:
 
     def undo_config(self) -> None:
         _info("Undoing config files...")
+        self._undo_crypto_policy()
+        self._undo_locale_timezone()
+        self._undo_nsswitch()
+        self._undo_alternatives()
+        self._undo_sssd_kerberos()
         self._remove_managed_block("/etc/nginx/nginx.conf", "nginx-server-block")
         self._remove_managed_block("/etc/chrony.conf", "chrony-servers")
         self._remove_managed_block("/etc/chrony.conf", "chrony-servers-ks")
@@ -873,6 +908,7 @@ class Driftify:
 
     def undo_services(self) -> None:
         _info("Undoing services...")
+        self._undo_tuned_profile()
         for svc in ("httpd", "nginx"):
             self.run_cmd(["systemctl", "stop", svc], check=False)
             self.run_cmd(["systemctl", "disable", svc], check=False)
@@ -915,6 +951,10 @@ class Driftify:
         self.run_cmd(["dnf", "module", "disable", "-y", "postgresql"], check=False)
         self.run_cmd(["dnf", "versionlock", "delete", "curl"], check=False)
         self.run_cmd(["dnf", "remove", "-y", "dnf-plugin-versionlock"], check=False)
+
+        # Undo mixed-arch and duplicate package fixtures (kitchen-sink)
+        self._undo_mixed_arch()
+        self._undo_duplicate_package()
 
     # ── RPM / Packages ────────────────────────────────────────────────────
 
@@ -1038,6 +1078,10 @@ class Driftify:
             _info(f"{_I.PACKAGE}  Adding version lock for curl")
             self.run_cmd(["dnf", "versionlock", "add", "curl"], check=False)
 
+            # Mixed 32/64-bit and duplicate package scenarios
+            self._install_mixed_arch()
+            self._install_duplicate_package()
+
     # ── Services ──────────────────────────────────────────────────────────
 
     def drift_services(self) -> None:
@@ -1071,6 +1115,10 @@ class Driftify:
             self.run_cmd(["systemctl", "disable", "kdump"], check=False)
         else:
             _warn("kdump unit not found — skipping disable")
+
+        # Tuned performance profile (standard+)
+        if self.needs_profile("standard"):
+            self._set_tuned_profile()
 
         # Mask bluetooth if it exists (standard+)
         if self.needs_profile("standard"):
@@ -1142,6 +1190,10 @@ class Driftify:
             return
 
         self._next_step("config")
+
+        # Minimal: crypto policy and locale/timezone
+        self._set_crypto_policy()
+        self._set_locale_timezone()
 
         # Minimal: modify RPM-owned configs (batch directives per file)
         self._apply_directives("/etc/httpd/conf/httpd.conf", {
@@ -1252,6 +1304,13 @@ export LOG_LEVEL=info
                 "pool_size = 10\n",
             )
 
+            # Identity stack: nsswitch + SSSD/Kerberos
+            self._modify_nsswitch()
+            self._install_sssd_kerberos()
+
+            # Python alternatives: pick a non-default version if available
+            self._set_alternatives()
+
         if self.needs_profile("kitchen-sink"):
             self._append_managed_block(
                 "/etc/security/limits.conf",
@@ -1319,6 +1378,11 @@ export LOG_LEVEL=info
                 "pool_size = 50\n"
                 "connection_timeout = 30\n",
             )
+
+            # nsswitch fleet variant: add winbind after sss on passwd/group lines.
+            # Standard profile has sss-only; kitchen-sink adds winbind, producing
+            # a content-hash difference that exercises fleet aggregation UI.
+            self._modify_nsswitch_winbind()
 
     # ── Secrets ────────────────────────────────────────────────────────────
 
@@ -1922,6 +1986,9 @@ domain=INTERNAL
             )
 
         if self.needs_profile("kitchen-sink"):
+            # Ruby + gems: exercises non-RPM language package detection
+            self._install_ruby_gems()
+
             # Mystery binary: stripped copy of /usr/bin/true — no metadata,
             # no build ID; yoinkc should flag this as unknown provenance
             mystery = "/usr/local/bin/mystery-tool"
@@ -2103,6 +2170,9 @@ domain=INTERNAL
                 check=False,
             )
 
+            # Custom SELinux file context for /srv/www
+            self._add_selinux_fcontext()
+
             # Custom audit rules
             self._ensure_dir(Path("/etc/audit/rules.d"))
             self._write_managed_text(
@@ -2173,6 +2243,293 @@ domain=INTERNAL
         finally:
             import shutil as _shutil
             _shutil.rmtree(td, ignore_errors=True)
+
+    # ── Coverage gap methods (spec 2026-03-17-coverage-gaps-design) ───────────
+
+    def _set_crypto_policy(self) -> None:
+        _info(f"{_I.SHIELD}  Setting crypto policy to FUTURE")
+        self.run_cmd(["update-crypto-policies", "--set", "FUTURE"], check=False)
+
+    def _set_locale_timezone(self) -> None:
+        _info(f"{_I.WRENCH}  Setting locale to en_GB.UTF-8")
+        self.run_cmd(["localectl", "set-locale", "LANG=en_GB.UTF-8"], check=False)
+        _info(f"{_I.CLOCK}  Setting timezone to America/Chicago")
+        self.run_cmd(["timedatectl", "set-timezone", "America/Chicago"], check=False)
+
+    def _set_tuned_profile(self) -> None:
+        import shutil as _shutil_tuned
+        if not _shutil_tuned.which("tuned-adm"):
+            _info(f"{_I.DOWNLOAD}  tuned not found — installing")
+            self.run_cmd(["dnf", "install", "-y", "tuned"], check=False)
+            self.run_cmd(["systemctl", "enable", "--now", "tuned"], check=False)
+        _info(f"{_I.COGS}  Setting tuned profile to throughput-performance")
+        self.run_cmd(["tuned-adm", "profile", "throughput-performance"], check=False)
+
+    def _modify_nsswitch(self) -> None:
+        """Append sss to passwd/group/shadow lines in /etc/nsswitch.conf."""
+        path_str = "/etc/nsswitch.conf"
+        path = Path(path_str)
+        if not path.exists():
+            _warn(f"{path_str} not found — skipping nsswitch modification")
+            return
+        if not self.dry_run:
+            with open(path) as fh:
+                content = fh.read()
+            if re.search(r"^passwd:.*\bsss\b", content, re.MULTILINE):
+                _info("nsswitch.conf already has sss — skipping")
+                return
+        _info(f"{_I.WRENCH}  Adding sss to passwd/group/shadow in /etc/nsswitch.conf")
+        for key in ("passwd", "group", "shadow"):
+            self.run_cmd(
+                ["sed", "-i", f"s/^{key}:.*/& sss/", path_str],
+                check=False,
+            )
+
+    def _modify_nsswitch_winbind(self) -> None:
+        """Append winbind after sss on passwd/group lines (kitchen-sink fleet variant)."""
+        path_str = "/etc/nsswitch.conf"
+        path = Path(path_str)
+        if not path.exists():
+            _warn(f"{path_str} not found — skipping nsswitch winbind modification")
+            return
+        if self.dry_run:
+            _dry(f"modify {path_str}: replace sss with sss winbind on passwd/group lines")
+            return
+        with open(path) as fh:
+            lines = fh.readlines()
+        if any(re.match(r"^passwd:.*\bwinbind\b", l) for l in lines):
+            _info("nsswitch.conf passwd line already has winbind — skipping")
+            return
+        _info(
+            f"{_I.WRENCH}  Adding winbind after sss in nsswitch.conf "
+            "passwd/group (kitchen-sink)"
+        )
+        modified = []
+        for line in lines:
+            if (
+                re.match(r"^(passwd:|group:)", line)
+                and "sss" in line
+                and "winbind" not in line
+            ):
+                line = re.sub(r"\bsss\b", "sss winbind", line)
+            modified.append(line)
+        with open(path, "w") as fh:
+            fh.writelines(modified)
+        _info(f"Updated {path}")
+
+    def _install_sssd_kerberos(self) -> None:
+        sssd_conf = (
+            "[sssd]\n"
+            "domains = example.com\n"
+            "services = nss, pam\n"
+            "\n"
+            "[domain/example.com]\n"
+            "id_provider = ldap\n"
+            "auth_provider = krb5\n"
+            "ldap_uri = ldap://ldap.example.com\n"
+            "krb5_server = kerberos.example.com\n"
+            "krb5_realm = EXAMPLE.COM\n"
+        )
+        krb5_conf = (
+            "[libdefaults]\n"
+            "default_realm = EXAMPLE.COM\n"
+            "dns_lookup_realm = false\n"
+            "dns_lookup_kdc = true\n"
+            "\n"
+            "[realms]\n"
+            "EXAMPLE.COM = {\n"
+            "    kdc = kerberos.example.com\n"
+            "    admin_server = kerberos.example.com\n"
+            "}\n"
+            "\n"
+            "[domain_realm]\n"
+            ".example.com = EXAMPLE.COM\n"
+            "example.com = EXAMPLE.COM\n"
+        )
+        _info(f"{_I.DOWNLOAD}  Installing sssd sssd-krb5")
+        self.run_cmd(["dnf", "install", "-y", "sssd", "sssd-krb5"], check=False)
+        self._ensure_dir(Path("/etc/sssd"))
+        self._write_managed_text("/etc/sssd/sssd.conf", sssd_conf, mode=0o600)
+        self._write_managed_text("/etc/krb5.conf", krb5_conf)
+        _info(f"{_I.TOGGLE}  Enabling sssd")
+        self.run_cmd(["systemctl", "enable", "sssd"], check=False)
+
+    def _set_alternatives(self) -> None:
+        if not self._check_command("alternatives"):
+            return
+        if self.dry_run:
+            _dry("alternatives --display python3")
+            _dry("alternatives --set python3 /usr/bin/python3.X  # (non-default version)")
+            return
+        r = subprocess.run(
+            ["alternatives", "--display", "python3"],
+            capture_output=True, text=True, check=False,
+        )
+        if r.returncode != 0:
+            _warn("alternatives --display python3 failed — skipping alternatives change")
+            return
+        current_match = re.search(r"link currently points to (\S+)", r.stdout)
+        current = current_match.group(1) if current_match else None
+        available = re.findall(
+            r"^(/usr/bin/python3\S*)\s+-\s+priority", r.stdout, re.MULTILINE
+        )
+        non_default = [a for a in available if a != current]
+        if not non_default:
+            _warn("Only one python3 alternative available — skipping alternatives change")
+            return
+        target = non_default[0]
+        _info(f"{_I.WRENCH}  Setting alternatives python3 \u2192 {target}")
+        self.run_cmd(["alternatives", "--set", "python3", target], check=False)
+
+    def _add_selinux_fcontext(self) -> None:
+        if not self._check_command("semanage"):
+            return
+        _info(f"{_I.SHIELD}  Creating /srv/www and adding httpd_sys_content_t fcontext")
+        self._ensure_dir(Path("/srv/www"))
+        self.run_cmd(
+            ["semanage", "fcontext", "-a", "-t", "httpd_sys_content_t",
+             "/srv/www(/.*)?"],
+            check=False,
+        )
+        self.run_cmd(["restorecon", "-Rv", "/srv/www"], check=False)
+
+    def _install_mixed_arch(self) -> None:
+        _info(f"{_I.PACKAGE}  Installing glibc.i686 (32-bit compatibility)")
+        self.run_cmd(["dnf", "install", "-y", "glibc.i686"], check=False)
+
+    def _install_duplicate_package(self) -> None:
+        """Force-install an older package version to create a duplicate RPM DB entry.
+
+        Intentionally fragile — see spec item 9 for rationale.  Errors are
+        logged and do not abort the profile run.
+        """
+        import platform
+        arch = platform.machine()
+        vault_urls: dict[int, str] = {
+            9: (
+                "https://vault.centos.org/9-stream/BaseOS/x86_64/os/Packages/"
+                "zlib-1.2.11-38.el9.x86_64.rpm"
+            ),
+        }
+        pkg_url = vault_urls.get(self.os_major)
+        if pkg_url is None or arch != "x86_64":
+            _warn(
+                f"No duplicate-package fixture URL for "
+                f"{self.os_id} {self.os_major} {arch} — skipping"
+            )
+            return
+        _info(f"{_I.PACKAGE}  Attempting force-install of older zlib for duplicate detection")
+        if self.dry_run:
+            _dry(f"rpm --force --nodeps -i {pkg_url}")
+            return
+        try:
+            result = subprocess.run(
+                ["rpm", "--force", "--nodeps", "-i", pkg_url],
+                check=False, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                _warn(
+                    f"Duplicate package install failed (non-fatal): "
+                    f"{result.stderr.strip()[:200]}"
+                )
+            else:
+                _info("Older zlib installed alongside current version")
+        except Exception as exc:
+            _warn(f"Duplicate package install failed (non-fatal): {exc}")
+
+    def _install_ruby_gems(self) -> None:
+        _info(f"{_I.PUZZLE}  Installing ruby and gems (bundler, sinatra)")
+        self.run_cmd(["dnf", "install", "-y", "ruby"], check=False)
+        self.run_cmd(
+            ["gem", "install", "bundler", "sinatra", "--no-document"],
+            check=False,
+        )
+
+    # ── Coverage gap undo helpers ──────────────────────────────────────────────
+
+    def _undo_crypto_policy(self) -> None:
+        _info("Restoring crypto policy to DEFAULT")
+        self.run_cmd(["update-crypto-policies", "--set", "DEFAULT"], check=False)
+
+    def _undo_locale_timezone(self) -> None:
+        _info("Restoring locale to en_US.UTF-8 and timezone to UTC")
+        self.run_cmd(["localectl", "set-locale", "LANG=en_US.UTF-8"], check=False)
+        self.run_cmd(["timedatectl", "set-timezone", "UTC"], check=False)
+
+    def _undo_tuned_profile(self) -> None:
+        if self._check_command("tuned-adm"):
+            _info("Restoring tuned profile to virtual-guest")
+            self.run_cmd(["tuned-adm", "profile", "virtual-guest"], check=False)
+
+    def _undo_nsswitch(self) -> None:
+        """Remove sss and winbind entries added to /etc/nsswitch.conf."""
+        path = "/etc/nsswitch.conf"
+        if not Path(path).exists():
+            return
+        _info(f"Removing sss/winbind from {path}")
+        for key in ("passwd", "group", "shadow"):
+            self.run_cmd(
+                ["sed", "-i", f"/^{key}:/s/ winbind//g", path],
+                check=False,
+            )
+            self.run_cmd(
+                ["sed", "-i", f"/^{key}:/s/ sss//g", path],
+                check=False,
+            )
+
+    def _undo_sssd_kerberos(self) -> None:
+        _info("Disabling and removing sssd + Kerberos config")
+        self.run_cmd(["systemctl", "disable", "sssd"], check=False)
+        self.run_cmd(["dnf", "remove", "-y", "sssd", "sssd-krb5"], check=False)
+        self._remove_path("/etc/sssd/sssd.conf")
+        self._remove_path("/etc/krb5.conf")
+
+    def _undo_alternatives(self) -> None:
+        if self._check_command("alternatives"):
+            _info("Resetting python3 alternatives to auto")
+            self.run_cmd(["alternatives", "--auto", "python3"], check=False)
+
+    def _undo_selinux_fcontext(self) -> None:
+        if self._check_command("semanage"):
+            _info("Removing httpd_sys_content_t fcontext for /srv/www")
+            self.run_cmd(
+                ["semanage", "fcontext", "-d", "/srv/www(/.*)?"],
+                check=False,
+            )
+        self._remove_path("/srv/www")
+
+    def _undo_mixed_arch(self) -> None:
+        _info("Removing glibc.i686")
+        self.run_cmd(["dnf", "remove", "-y", "glibc.i686"], check=False)
+
+    def _undo_duplicate_package(self) -> None:
+        """Best-effort removal of the older zlib duplicate."""
+        _info("Attempting removal of older zlib duplicate (best-effort)")
+        if self.dry_run:
+            _dry("rpm -e --nodeps zlib-1.2.11-38.el9.x86_64  # (older duplicate, if present)")
+            return
+        try:
+            r = subprocess.run(
+                ["rpm", "-q", "--qf", "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n", "zlib"],
+                capture_output=True, text=True, check=False,
+            )
+            versions = [v.strip() for v in r.stdout.splitlines() if v.strip()]
+            if len(versions) > 1:
+                oldest = sorted(versions)[0]
+                _info(f"Removing duplicate: {oldest}")
+                self.run_cmd(["rpm", "-e", "--nodeps", oldest], check=False)
+            else:
+                _info("No duplicate zlib found — nothing to remove")
+        except Exception as exc:
+            _warn(f"Duplicate package removal failed (non-fatal): {exc}")
+
+    def _undo_ruby_gems(self) -> None:
+        _info("Uninstalling ruby gems and removing ruby")
+        self.run_cmd(
+            ["gem", "uninstall", "bundler", "sinatra", "-x", "--all"],
+            check=False,
+        )
+        self.run_cmd(["dnf", "remove", "-y", "ruby"], check=False)
 
     def _launch_yoinkc(self) -> None:
         """Download run-yoinkc.sh from the yoinkc repo and execute it."""
@@ -2278,7 +2635,10 @@ domain=INTERNAL
             if self.needs_profile("standard"):
                 rpm_parts += ["1 ghost package", "1 orphaned config"]
             if self.needs_profile("kitchen-sink"):
-                rpm_parts += ["postgresql:15 enabled", "curl versionlock added"]
+                rpm_parts += [
+                    "postgresql:15 enabled", "curl versionlock added",
+                    "glibc.i686", "duplicate package",
+                ]
             rpm_str = ", ".join(rpm_parts)
         else:
             rpm_str = "skipped"
@@ -2296,6 +2656,8 @@ domain=INTERNAL
             if dis:    parts.append(f"{dis} disabled")
             if mas:    parts.append(f"{mas} masked")
             if dropin: parts.append(f"{dropin} drop-in override(s)")
+            if self.needs_profile("standard"):
+                parts.append("tuned\u2192throughput-performance")
             svc_str = ", ".join(parts) if parts else "none"
         else:
             svc_str = "skipped"
@@ -2303,7 +2665,15 @@ domain=INTERNAL
 
         # ── Config ───────────────────────────────────────────────────────────
         if "config" not in self.skip:
-            cfg_str = "RPM + unowned config drift applied"
+            cfg_parts = [
+                "crypto policy\u2192FUTURE", "locale\u2192en_GB", "tz\u2192America/Chicago",
+                "RPM + unowned config drift",
+            ]
+            if self.needs_profile("standard"):
+                cfg_parts += ["nsswitch +sss", "SSSD/Kerberos", "alternatives python3"]
+            if self.needs_profile("kitchen-sink"):
+                cfg_parts.append("nsswitch +winbind")
+            cfg_str = ", ".join(cfg_parts)
         else:
             cfg_str = "skipped"
         _info(f"{SECTION_ICONS['config']}  Config:     {cfg_str}")
@@ -2350,6 +2720,8 @@ domain=INTERNAL
             nrpm_parts = ["Python venv", "Go binary (yq)"]
             if self.needs_profile("standard"):
                 nrpm_parts += ["npm project", "git repo", "deploy.sh"]
+            if self.needs_profile("kitchen-sink"):
+                nrpm_parts += ["ruby + gems"]
             nrpm_str = ", ".join(nrpm_parts)
         else:
             nrpm_str = "skipped"
@@ -2371,8 +2743,10 @@ domain=INTERNAL
             nb      = 1 + (1 if self.needs_profile("standard") else 0)
             nm      = 1 if self.needs_profile("kitchen-sink") else 0
             audit_n = 1 if self.needs_profile("standard") else 0
+            fctx_n  = 1 if self.needs_profile("standard") else 0
             sel_parts = []
             if nb:      sel_parts.append(f"{nb} boolean(s) set")
+            if fctx_n:  sel_parts.append(f"{fctx_n} fcontext rule(s)")
             if audit_n: sel_parts.append(f"{audit_n} audit rule file(s)")
             if nm:      sel_parts.append(f"{nm} policy module(s)")
             sel_str = ", ".join(sel_parts) if sel_parts else "none"
