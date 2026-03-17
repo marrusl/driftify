@@ -498,9 +498,12 @@ class Driftify:
             repo_label = "RPM Fusion" if self._is_fedora() else "EPEL"
             tiers = " + standard" if self.needs_profile("standard") else ""
             ghost = ", ghost entry" if self.needs_profile("standard") else ""
+            dnf_extra = ""
+            if self.needs_profile("kitchen-sink"):
+                dnf_extra = ", postgresql:15 module stream, curl version lock"
             lines.append(
                 f"Install ~{total} packages "
-                f"({repo_label} + base{tiers}{ghost})"
+                f"({repo_label} + base{tiers}{ghost}{dnf_extra})"
             )
 
         if "services" in active:
@@ -907,6 +910,12 @@ class Driftify:
                 _info(f"Removing repo package {repo_pkg}")
                 self.run_cmd(["dnf", "remove", "-y", repo_pkg], check=False)
 
+        # Undo DNF module streams and version locks (kitchen-sink)
+        _info("Undoing DNF module streams and version locks...")
+        self.run_cmd(["dnf", "module", "disable", "-y", "postgresql"], check=False)
+        self.run_cmd(["dnf", "versionlock", "delete", "curl"], check=False)
+        self.run_cmd(["dnf", "remove", "-y", "dnf-plugin-versionlock"], check=False)
+
     # ── RPM / Packages ────────────────────────────────────────────────────
 
     def _is_fedora(self) -> bool:
@@ -1016,6 +1025,18 @@ class Driftify:
                 "max_suggestions = 10\n",
             )
             self.run_cmd(["dnf", "remove", "-y", GHOST_PACKAGE], check=False)
+
+        # DNF module streams and version locks (kitchen-sink)
+        # Exercises yoinkc's detection of enabled module streams and version locks
+        if self.needs_profile("kitchen-sink"):
+            _info(f"{_I.PUZZLE}  Enabling DNF module stream: postgresql:15")
+            self.run_cmd(["dnf", "module", "enable", "-y", "postgresql:15"], check=False)
+
+            _info(f"{_I.PACKAGE}  Installing DNF version lock plugin")
+            self.run_cmd(["dnf", "install", "-y", "dnf-plugin-versionlock"], check=False)
+
+            _info(f"{_I.PACKAGE}  Adding version lock for curl")
+            self.run_cmd(["dnf", "versionlock", "add", "curl"], check=False)
 
     # ── Services ──────────────────────────────────────────────────────────
 
@@ -2256,6 +2277,8 @@ domain=INTERNAL
                          f"1 repo added ({repo_name})"]
             if self.needs_profile("standard"):
                 rpm_parts += ["1 ghost package", "1 orphaned config"]
+            if self.needs_profile("kitchen-sink"):
+                rpm_parts += ["postgresql:15 enabled", "curl versionlock added"]
             rpm_str = ", ".join(rpm_parts)
         else:
             rpm_str = "skipped"
