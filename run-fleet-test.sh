@@ -16,6 +16,10 @@ curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-
 chmod +x "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT"
 trap 'rm -f "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT" "$FLEET_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
+# Start from a clean slate (undo any previous driftify run)
+echo "=== Undoing previous driftify state ==="
+sudo "$DRIFTIFY_SCRIPT" --undo -yq
+
 for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"
     hostname="${HOSTNAMES[$i]}"
