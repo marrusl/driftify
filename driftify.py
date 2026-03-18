@@ -530,7 +530,7 @@ class Driftify:
             lines.append(svcs)
 
         if "config" in active:
-            cfgs = "Crypto policy\u2192FUTURE, locale\u2192en_GB.UTF-8, tz\u2192America/Chicago"
+            cfgs = "Locale\u2192en_GB.UTF-8, tz\u2192America/Chicago"
             cfgs += "; modify RPM-owned configs (httpd, nginx"
             if self.needs_profile("standard"):
                 cfgs += (
@@ -857,7 +857,6 @@ class Driftify:
 
     def undo_config(self) -> None:
         _info("Undoing config files...")
-        self._undo_crypto_policy()
         self._undo_locale_timezone()
         self._undo_nsswitch()
         self._undo_alternatives()
@@ -1191,8 +1190,7 @@ class Driftify:
 
         self._next_step("config")
 
-        # Minimal: crypto policy and locale/timezone
-        self._set_crypto_policy()
+        # Minimal: locale/timezone
         self._set_locale_timezone()
 
         # Minimal: modify RPM-owned configs (batch directives per file)
@@ -2246,10 +2244,6 @@ domain=INTERNAL
 
     # ── Coverage gap methods (spec 2026-03-17-coverage-gaps-design) ───────────
 
-    def _set_crypto_policy(self) -> None:
-        _info(f"{_I.SHIELD}  Setting crypto policy to FUTURE")
-        self.run_cmd(["update-crypto-policies", "--set", "FUTURE"], check=False)
-
     def _set_locale_timezone(self) -> None:
         _info(f"{_I.WRENCH}  Setting locale to en_GB.UTF-8")
         self.run_cmd(["localectl", "set-locale", "LANG=en_GB.UTF-8"], check=False)
@@ -2446,10 +2440,6 @@ domain=INTERNAL
         )
 
     # ── Coverage gap undo helpers ──────────────────────────────────────────────
-
-    def _undo_crypto_policy(self) -> None:
-        _info("Restoring crypto policy to DEFAULT")
-        self.run_cmd(["update-crypto-policies", "--set", "DEFAULT"], check=False)
 
     def _undo_locale_timezone(self) -> None:
         _info("Restoring locale to en_US.UTF-8 and timezone to UTC")
@@ -2666,7 +2656,7 @@ domain=INTERNAL
         # ── Config ───────────────────────────────────────────────────────────
         if "config" not in self.skip:
             cfg_parts = [
-                "crypto policy\u2192FUTURE", "locale\u2192en_GB", "tz\u2192America/Chicago",
+                "locale\u2192en_GB", "tz\u2192America/Chicago",
                 "RPM + unowned config drift",
             ]
             if self.needs_profile("standard"):
