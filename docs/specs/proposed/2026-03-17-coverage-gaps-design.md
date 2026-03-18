@@ -7,12 +7,11 @@
 
 yoinkc has added several inspection categories that driftify doesn't create examples for. Operators testing with driftify profiles won't see these categories populated in reports, so they can't verify the rendering or triage workflow for those items.
 
-## Gaps (10 items)
+## Gaps (9 items)
 
 | # | Category | What to add | Profile |
 |---|----------|-------------|---------|
-| 1 | Crypto policy | `update-crypto-policies --set LEGACY` | minimal |
-| 2 | Locale/timezone | `localectl set-locale LANG=en_GB.UTF-8` + `timedatectl set-timezone America/Chicago` | minimal |
+| 1 | Locale/timezone | `localectl set-locale LANG=en_GB.UTF-8` + `timedatectl set-timezone America/Chicago` | minimal |
 | 3 | Tuned profile | `tuned-adm profile throughput-performance` | standard |
 | 4 | nsswitch.conf | Modify `/etc/nsswitch.conf` — add `sss` to passwd/group/shadow lines | standard |
 | 5 | SSSD + Kerberos | `dnf install -y sssd sssd-krb5` + write `/etc/sssd/sssd.conf` (LDAP+Kerberos domain) + write `/etc/krb5.conf` (example realm) + `systemctl enable sssd` | standard |
@@ -24,7 +23,7 @@ yoinkc has added several inspection categories that driftify doesn't create exam
 
 ## Profile Distribution Rationale
 
-- **Minimal** (1-2): crypto policy and locale/timezone are universal — every host has them, and changing them is a common first step in hardening or localization.
+- **Minimal** (1): locale/timezone is universal — every host has one, and changing it is a common localization step.
 - **Standard** (3-7): tuned, nsswitch, SSSD/Kerberos, alternatives, and SELinux file contexts are standard enterprise configuration. SSSD+nsswitch go together (identity stack). Alternatives is common after multi-version Python installs. SELinux file contexts pair with the existing port labels already in standard.
 - **Kitchen-sink** (8-10): mixed arch, duplicate packages, and Ruby gems are edge cases or legacy scenarios. Duplicates especially — they're rare in clean environments and the installation mechanism is fragile.
 
@@ -107,7 +106,6 @@ restorecon -Rv /srv/www
 ### Undo support
 
 Each new method needs a corresponding undo entry in the `_undo_*` methods:
-- Crypto policy: `update-crypto-policies --set DEFAULT`
 - Locale: `localectl set-locale LANG=en_US.UTF-8`
 - Timezone: `timedatectl set-timezone UTC` (or America/New_York — whatever the base default is)
 - Tuned: `tuned-adm profile virtual-guest` (common default)
