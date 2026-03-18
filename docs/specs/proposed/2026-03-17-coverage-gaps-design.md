@@ -11,7 +11,7 @@ yoinkc has added several inspection categories that driftify doesn't create exam
 
 | # | Category | What to add | Profile |
 |---|----------|-------------|---------|
-| 1 | Crypto policy | `update-crypto-policies --set FUTURE` | minimal |
+| 1 | Crypto policy | `update-crypto-policies --set LEGACY` | minimal |
 | 2 | Locale/timezone | `localectl set-locale LANG=en_GB.UTF-8` + `timedatectl set-timezone America/Chicago` | minimal |
 | 3 | Tuned profile | `tuned-adm profile throughput-performance` | standard |
 | 4 | nsswitch.conf | Modify `/etc/nsswitch.conf` — add `sss` to passwd/group/shadow lines | standard |
