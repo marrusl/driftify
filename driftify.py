@@ -82,6 +82,7 @@ GRUB_DEFAULT_PATH = "/etc/default/grub"
 
 class _I:
     ROCKET   = "\uf135"
+    SAILBOAT = "⛵"
     CHECK    = "\uf058"   # check-circle
     OK       = "\uf00c"   # check
     WARN     = "\uf071"   # exclamation-triangle
@@ -699,7 +700,7 @@ class Driftify:
     def run(self) -> None:
         self._t0 = time.monotonic()
 
-        _banner(f"{_I.ROCKET}  driftify — {self.profile} profile on "
+        _banner(f"{_I.SAILBOAT}  driftify — {self.profile} profile on "
                 f"{self.os_id} {self.os_major}")
 
         if STAMP_PATH.exists():
