@@ -186,6 +186,11 @@ def _skip(msg: str) -> None:
     print(f"  {_C.DIM}{_I.SKIP}  {msg}{_C.RESET}")
 
 
+def _sub(msg: str) -> None:
+    """Subdued progress line — visible even in quiet mode."""
+    print(f"  {_C.DIM}     ↳ {msg}{_C.RESET}")
+
+
 def _dry(msg: str) -> None:
     print(f"  {_C.YELLOW}{_I.EYE}  [DRY RUN]{_C.RESET} {msg}")
 
@@ -316,13 +321,27 @@ class Driftify:
             return None
         if not self.quiet:
             _info(f"Running: {pretty}")
+        elif str(cmd[0]) == "dnf":
+            # Show subdued progress in quiet mode so the user knows dnf is working
+            parts = [str(c) for c in cmd[1:] if not str(c).startswith("-")]
+            _sub(f"dnf {' '.join(parts[:4])}{'...' if len(parts) > 4 else ''}")
         # capture=True means the caller needs stdout; quiet=True means we
         # want to suppress terminal noise — both cases use capture_output=True.
-        capture_out = capture or self.quiet
-        result = subprocess.run(
-            cmd, check=check,
-            capture_output=capture_out, text=capture_out,
-        )
+        # Exception: dnf in quiet mode — let stderr through so the user sees
+        # repo metadata download progress (BaseOS, AppStream, EPEL, etc.).
+        is_dnf = str(cmd[0]) == "dnf"
+        if self.quiet and is_dnf and not capture:
+            result = subprocess.run(
+                cmd, check=check,
+                stdout=subprocess.PIPE, stderr=None,  # stderr streams to terminal
+                text=True,
+            )
+        else:
+            capture_out = capture or self.quiet
+            result = subprocess.run(
+                cmd, check=check,
+                capture_output=capture_out, text=capture_out,
+            )
         if not check and result.returncode != 0:
             _warn(f"  ↳ exited {result.returncode}: {pretty}")
         return result
