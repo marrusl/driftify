@@ -8,13 +8,11 @@ HOSTNAMES=(web-01 web-02 web-03)
 
 DRIFTIFY_SCRIPT="$(mktemp)"
 YOINKC_SCRIPT="$(mktemp)"
-FLEET_SCRIPT="$(mktemp)"
 FLEET_DIR="$(mktemp -d -t fleet-aggregate.XXXXXX)"
 curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/refs/heads/main/driftify.py -o "$DRIFTIFY_SCRIPT"
 curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc.sh -o "$YOINKC_SCRIPT"
-curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/refs/heads/main/run-yoinkc-fleet.sh -o "$FLEET_SCRIPT"
 chmod +x "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT"
-trap 'rm -f "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT" "$FLEET_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
+trap 'rm -f "$DRIFTIFY_SCRIPT" "$YOINKC_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
 # Start from a clean slate (undo any previous driftify run)
 echo "=== Undoing previous driftify state ==="
@@ -32,7 +30,7 @@ echo ""
 echo "=== Aggregating fleet ==="
 # shellcheck disable=SC2012
 ls -1t *.tar.gz | head -3 | xargs -I{} cp {} "$FLEET_DIR/"
-bash "$FLEET_SCRIPT" "$FLEET_DIR" -p 66
+bash "$YOINKC_SCRIPT" fleet "$FLEET_DIR" -p 66
 
 echo ""
 echo "=== Fleet tarball ==="
