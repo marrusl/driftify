@@ -566,12 +566,13 @@ class Driftify:
             )
 
         if "services" in active:
-            svcs = "Enable httpd, nginx; disable kdump"
+            svcs = "Enable httpd, nginx; disable kdump; mask kdump.service"
             if self.needs_profile("standard"):
                 svcs += (
                     "; tuned\u2192throughput-performance"
                     "; mask bluetooth (if present)"
                     "; drop-in overrides for httpd (override.conf, limits.conf=8192)"
+                    "; driftify-backup timer/service pair"
                 )
             if self.needs_profile("kitchen-sink"):
                 svcs += ", nginx; limits.conf overwritten (LimitNOFILE=65535, LimitNPROC=4096)"
@@ -619,6 +620,8 @@ class Driftify:
             sto = "Create /var/lib/myapp/, /var/log/myapp/ dirs"
             if self.needs_profile("standard"):
                 sto += "; add NFS/CIFS entries to /etc/fstab"
+            if self.needs_profile("kitchen-sink"):
+                sto += "; multipath.conf block, LVM thin profile"
             lines.append(sto)
 
         if "scheduled" in active:
@@ -659,7 +662,7 @@ class Driftify:
                 sel += (
                     ", httpd_can_network_relay=on"
                     ", fcontext httpd_sys_content_t on /srv/www"
-                    ", custom audit rules"
+                    ", custom audit rules, file-watch audit rules"
                 )
             if self.needs_profile("kitchen-sink"):
                 sel += ", install custom SELinux module"
@@ -827,6 +830,7 @@ class Driftify:
         self.run_cmd(["setsebool", "-P", "httpd_can_network_relay", "off"], check=False)
         self.run_cmd(["semodule", "-r", "myapp"], check=False)
         self._remove_path("/etc/audit/rules.d/driftify.rules")
+        self._remove_path("/etc/audit/rules.d/driftify-file-watch.rules")
 
     def undo_kernel(self) -> None:
         _info("Undoing kernel...")
@@ -878,8 +882,10 @@ class Driftify:
             self.run_cmd(["umount", mnt], check=False)
         self._remove_managed_block("/etc/fstab", "nfs-entry")
         self._remove_managed_block("/etc/fstab", "cifs-entry")
+        self._remove_managed_block("/etc/multipath.conf", "multipath-config")
         self._remove_path("/etc/auto.master.d/app.autofs")
         self._remove_path("/etc/auto.app")
+        self._remove_path("/etc/lvm/profile/driftify-thin.profile")
         self._remove_path("/var/lib/myapp")
         self._remove_path("/var/log/myapp")
         self._remove_path("/etc/myapp/cifs.creds")
@@ -959,8 +965,17 @@ class Driftify:
         for svc in ("httpd", "nginx"):
             self.run_cmd(["systemctl", "stop", svc], check=False)
             self.run_cmd(["systemctl", "disable", svc], check=False)
+        kdump_mask_path = Path("/etc/systemd/system/kdump.service")
+        if kdump_mask_path.is_symlink():
+            try:
+                if os.readlink(kdump_mask_path) == "/dev/null":
+                    self._remove_path(str(kdump_mask_path))
+            except OSError:
+                pass
         self.run_cmd(["systemctl", "enable", "kdump"], check=False)
         self.run_cmd(["systemctl", "unmask", "bluetooth"], check=False)
+        self._remove_path("/etc/systemd/system/driftify-backup.timer")
+        self._remove_path("/etc/systemd/system/driftify-backup.service")
         self._remove_path("/etc/systemd/system/httpd.service.d")
         self._remove_path("/etc/systemd/system/nginx.service.d")
         self.run_cmd(["systemctl", "daemon-reload"], check=False)
@@ -1177,6 +1192,15 @@ class Driftify:
         else:
             _warn("kdump unit not found — skipping disable")
 
+        mask_path = Path("/etc/systemd/system/kdump.service")
+        if not mask_path.exists():
+            if self.dry_run:
+                _dry(f"ln -s /dev/null {mask_path}")
+            else:
+                self._ensure_dir(mask_path.parent)
+                mask_path.symlink_to("/dev/null")
+                _info(f"{_I.MASK}  Masked kdump.service")
+
         # Tuned performance profile (standard+)
         if self.needs_profile("standard"):
             self._set_tuned_profile()
@@ -1219,6 +1243,25 @@ class Driftify:
             self._write_managed_text(
                 "/etc/systemd/system/httpd.service.d/limits.conf",
                 "[Service]\nLimitNOFILE=8192\n",
+            )
+            _info(f"{_I.CLOCK}  Writing driftify-backup timer/service pair")
+            self._write_managed_text(
+                "/etc/systemd/system/driftify-backup.timer",
+                "[Unit]\n"
+                "Description=Daily backup job\n\n"
+                "[Timer]\n"
+                "OnCalendar=*-*-* 03:00:00\n"
+                "Persistent=true\n\n"
+                "[Install]\n"
+                "WantedBy=timers.target\n",
+            )
+            self._write_managed_text(
+                "/etc/systemd/system/driftify-backup.service",
+                "[Unit]\n"
+                "Description=Run backup script\n\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/local/bin/backup.sh\n",
             )
 
         if self.needs_profile("kitchen-sink"):
@@ -1640,6 +1683,22 @@ domain=INTERNAL
                 "/etc/auto.app",
                 """/mnt/auto-app -fstype=nfs4,rw,soft,intr nfs.internal:/exports/auto-app
 """,
+            )
+            self._append_managed_block(
+                "/etc/multipath.conf",
+                "multipath-config",
+                """defaults {
+    user_friendly_names yes
+    find_multipaths yes
+    polling_interval 10
+}""",
+            )
+            self._write_managed_text(
+                "/etc/lvm/profile/driftify-thin.profile",
+                "allocation {\n"
+                "    thin_pool_autoextend_threshold = 70\n"
+                "    thin_pool_autoextend_percent = 20\n"
+                "}\n",
             )
 
     # ── Scheduled Tasks ────────────────────────────────────────────────────
@@ -2243,6 +2302,12 @@ domain=INTERNAL
                 "-a always,exit -F arch=b64 -S execve"
                 " -F uid=1001 -k appuser-exec\n",
             )
+            self._write_managed_text(
+                "/etc/audit/rules.d/driftify-file-watch.rules",
+                "-w /etc/shadow -p wa -k shadow-changes\n"
+                "-w /etc/passwd -p wa -k passwd-changes\n"
+                "-a always,exit -F arch=b64 -S execve -F euid=0 -k root-commands\n",
+            )
 
         if self.needs_profile("kitchen-sink"):
             self._install_selinux_module()
@@ -2700,14 +2765,16 @@ domain=INTERNAL
         if "services" not in self.skip:
             en  = 2
             dis = 1
-            mas = 1 if self.needs_profile("standard") else 0
+            mas = 1 + (1 if self.needs_profile("standard") else 0)
             dropin = (1 if self.needs_profile("standard") else 0) + \
                      (1 if self.needs_profile("kitchen-sink") else 0)
+            timer_pair = 1 if self.needs_profile("standard") else 0
             parts = []
             if en:     parts.append(f"{en} enabled")
             if dis:    parts.append(f"{dis} disabled")
             if mas:    parts.append(f"{mas} masked")
             if dropin: parts.append(f"{dropin} drop-in override(s)")
+            if timer_pair: parts.append(f"{timer_pair} timer unit pair")
             if self.needs_profile("standard"):
                 parts.append("tuned\u2192throughput-performance")
             svc_str = ", ".join(parts) if parts else "none"
@@ -2794,7 +2861,7 @@ domain=INTERNAL
         if "selinux" not in self.skip:
             nb      = 1 + (1 if self.needs_profile("standard") else 0)
             nm      = 1 if self.needs_profile("kitchen-sink") else 0
-            audit_n = 1 if self.needs_profile("standard") else 0
+            audit_n = 2 if self.needs_profile("standard") else 0
             fctx_n  = 1 if self.needs_profile("standard") else 0
             sel_parts = []
             if nb:      sel_parts.append(f"{nb} boolean(s) set")

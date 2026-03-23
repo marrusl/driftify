@@ -29,6 +29,53 @@ class DriftifyTestCase(unittest.TestCase):
         driftify.detect_os = self.original_detect_os
 
 
+class RedirectedFixtureTestCase(DriftifyTestCase):
+    """Base class for fixture tests that redirect absolute paths into a temp tree."""
+
+    def _build_redirected_drifter(self, td, profile):
+        driftify.STAMP_PATH = Path(td) / "stamp.json"
+        d = driftify.Driftify(profile, dry_run=False, skip_sections=[])
+        d.stamp.start(d.profile, d.os_id, d.os_major)
+
+        root = Path(td)
+
+        def map_path(path_str):
+            path = Path(path_str)
+            if str(path).startswith(str(root)):
+                return path
+            rel = str(path).lstrip("/")
+            return root / rel
+
+        original_write = d._write_managed_text
+        original_append = d._append_managed_block
+        original_remove_path = d._remove_path
+        original_remove_block = d._remove_managed_block
+        original_ensure_dir = d._ensure_dir
+
+        d._write_managed_text = (
+            lambda path_str, content, mode=0o644:
+            original_write(str(map_path(path_str)), content, mode)
+        )
+        d._append_managed_block = (
+            lambda path_str, marker, block, mode=0o644, create_if_missing=True:
+            original_append(
+                str(map_path(path_str)),
+                marker,
+                block,
+                mode=mode,
+                create_if_missing=create_if_missing,
+            )
+        )
+        d._remove_path = lambda path_str: original_remove_path(str(map_path(path_str)))
+        d._remove_managed_block = (
+            lambda path_str, marker:
+            original_remove_block(str(map_path(path_str)), marker)
+        )
+        d._ensure_dir = lambda path: original_ensure_dir(map_path(path))
+
+        return d, map_path
+
+
 class TestProfileAndSkipLogic(DriftifyTestCase):
     def test_needs_profile_ranking(self):
         d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
@@ -672,9 +719,16 @@ class TestServices(DriftifyTestCase):
             d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
             d.stamp.start(d.profile, d.os_id, d.os_major)
             files_written = {}
+            mask_path = Path(td) / "etc" / "systemd" / "system" / "kdump.service"
+            mask_path.parent.mkdir(parents=True)
 
             def patched_write(path_str, content, mode=0o644):
                 files_written[path_str] = content
+
+            def fake_path(path_str):
+                if path_str == "/etc/systemd/system/kdump.service":
+                    return mask_path
+                return Path(path_str)
 
             d._write_managed_text = patched_write
             d._ensure_dir = lambda p: None
@@ -682,7 +736,8 @@ class TestServices(DriftifyTestCase):
             # drift_services uses subprocess.run directly for systemctl unit checks
             mock_subp = unittest.mock.MagicMock()
             mock_subp.returncode = 1  # unit not found → skip disable/mask
-            with unittest.mock.patch("subprocess.run", return_value=mock_subp):
+            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path), \
+                 unittest.mock.patch("subprocess.run", return_value=mock_subp):
                 d.drift_services()
 
         httpd_dropin = next(
@@ -716,6 +771,201 @@ class TestServices(DriftifyTestCase):
             d._print_summary()
         self._suppress.__enter__()
         self.assertIn("2 drop-in override(s)", buf.getvalue())
+
+    def test_undo_services_removes_kdump_mask_before_enabling(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+        events = []
+
+        with tempfile.TemporaryDirectory() as td:
+            mask_path = Path(td) / "etc" / "systemd" / "system" / "kdump.service"
+            mask_path.parent.mkdir(parents=True)
+            mask_path.symlink_to("/dev/null")
+
+            def fake_path(path_str):
+                if path_str == "/etc/systemd/system/kdump.service":
+                    return mask_path
+                return Path(path_str)
+
+            def fake_remove(path_str):
+                events.append(("remove", path_str))
+                if path_str == str(mask_path):
+                    Path(path_str).unlink(missing_ok=True)
+
+            def fake_run(cmd, check=False, capture=False):
+                events.append(("run", cmd))
+                return unittest.mock.MagicMock(returncode=0)
+
+            d._remove_path = fake_remove
+            d.run_cmd = fake_run
+
+            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path):
+                d.undo_services()
+
+        self.assertLess(
+            events.index(("remove", str(mask_path))),
+            events.index(("run", ["systemctl", "enable", "kdump"])),
+        )
+
+
+class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
+    def test_services_standard_creates_backup_timer_files_and_undo_removes_them(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "standard")
+            mask_path = map_path("/etc/systemd/system/kdump.service")
+
+            def fake_systemctl_cat(cmd, **kwargs):
+                name = cmd[-1]
+                return unittest.mock.MagicMock(
+                    returncode=0 if name == "kdump" else 1
+                )
+
+            def fake_path(path_str):
+                if path_str == "/etc/systemd/system/kdump.service":
+                    return mask_path
+                return Path(path_str)
+
+            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path), \
+                 unittest.mock.patch("subprocess.run", side_effect=fake_systemctl_cat):
+                d.run_cmd = lambda *a, **k: None
+                d.drift_services()
+
+            timer_path = map_path("/etc/systemd/system/driftify-backup.timer")
+            service_path = map_path("/etc/systemd/system/driftify-backup.service")
+            self.assertTrue(timer_path.exists())
+            self.assertTrue(service_path.exists())
+            self.assertEqual(
+                timer_path.read_text(),
+                "[Unit]\n"
+                "Description=Daily backup job\n\n"
+                "[Timer]\n"
+                "OnCalendar=*-*-* 03:00:00\n"
+                "Persistent=true\n\n"
+                "[Install]\n"
+                "WantedBy=timers.target\n",
+            )
+            self.assertEqual(
+                service_path.read_text(),
+                "[Unit]\n"
+                "Description=Run backup script\n\n"
+                "[Service]\n"
+                "Type=oneshot\n"
+                "ExecStart=/usr/local/bin/backup.sh\n",
+            )
+
+            d.undo_services()
+            self.assertFalse(timer_path.exists())
+            self.assertFalse(service_path.exists())
+
+    def test_services_minimal_masks_kdump_and_undo_removes_dev_null_symlink(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "minimal")
+            mask_path = map_path("/etc/systemd/system/kdump.service")
+
+            def fake_path(path_str):
+                if path_str == "/etc/systemd/system/kdump.service":
+                    return mask_path
+                return Path(path_str)
+
+            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path), \
+                 unittest.mock.patch(
+                     "subprocess.run",
+                     return_value=unittest.mock.MagicMock(returncode=0),
+                 ):
+                d.run_cmd = lambda *a, **k: None
+                d.drift_services()
+
+            self.assertTrue(mask_path.is_symlink())
+            self.assertEqual(os.readlink(mask_path), "/dev/null")
+
+            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path):
+                d.undo_services()
+            self.assertFalse(mask_path.exists())
+
+    def test_services_minimal_does_not_create_backup_timer_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "minimal")
+            mask_path = map_path("/etc/systemd/system/kdump.service")
+
+            def fake_path(path_str):
+                if path_str == "/etc/systemd/system/kdump.service":
+                    return mask_path
+                return Path(path_str)
+
+            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path), \
+                 unittest.mock.patch(
+                     "subprocess.run",
+                     return_value=unittest.mock.MagicMock(returncode=0),
+                 ):
+                d.run_cmd = lambda *a, **k: None
+                d.drift_services()
+
+            self.assertFalse(map_path("/etc/systemd/system/driftify-backup.timer").exists())
+            self.assertFalse(map_path("/etc/systemd/system/driftify-backup.service").exists())
+
+    def test_storage_kitchen_sink_creates_lvm_and_multipath_and_undo_cleans_up(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "kitchen-sink")
+            d.run_cmd = lambda *a, **k: None
+
+            d.drift_storage()
+
+            multipath_path = map_path("/etc/multipath.conf")
+            profile_path = map_path("/etc/lvm/profile/driftify-thin.profile")
+            self.assertTrue(multipath_path.exists())
+            self.assertIn("BEGIN DRIFTIFY multipath-config", multipath_path.read_text())
+            self.assertIn("user_friendly_names yes", multipath_path.read_text())
+            self.assertEqual(
+                profile_path.read_text(),
+                "allocation {\n"
+                "    thin_pool_autoextend_threshold = 70\n"
+                "    thin_pool_autoextend_percent = 20\n"
+                "}\n",
+            )
+
+            d.undo_storage()
+            self.assertFalse(profile_path.exists())
+            if multipath_path.exists():
+                self.assertNotIn("BEGIN DRIFTIFY multipath-config", multipath_path.read_text())
+
+    def test_storage_standard_does_not_create_lvm_or_multipath_fixtures(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "standard")
+            d.run_cmd = lambda *a, **k: None
+
+            d.drift_storage()
+
+            self.assertFalse(map_path("/etc/multipath.conf").exists())
+            self.assertFalse(map_path("/etc/lvm/profile/driftify-thin.profile").exists())
+
+    def test_selinux_standard_creates_file_watch_rules_and_undo_removes_them(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "standard")
+            d.run_cmd = lambda *a, **k: None
+            d._add_selinux_fcontext = lambda: None
+
+            d.drift_selinux()
+
+            rules_path = map_path("/etc/audit/rules.d/driftify-file-watch.rules")
+            self.assertTrue(rules_path.exists())
+            self.assertEqual(
+                rules_path.read_text(),
+                "-w /etc/shadow -p wa -k shadow-changes\n"
+                "-w /etc/passwd -p wa -k passwd-changes\n"
+                "-a always,exit -F arch=b64 -S execve -F euid=0 -k root-commands\n",
+            )
+
+            d.undo_selinux()
+            self.assertFalse(rules_path.exists())
+
+    def test_selinux_minimal_does_not_create_file_watch_rules(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path = self._build_redirected_drifter(td, "minimal")
+            d.run_cmd = lambda *a, **k: None
+            d._add_selinux_fcontext = lambda: None
+
+            d.drift_selinux()
+
+            self.assertFalse(map_path("/etc/audit/rules.d/driftify-file-watch.rules").exists())
 
 
 class TestScheduled(DriftifyTestCase):
@@ -1252,8 +1502,8 @@ class TestPrintSummary(DriftifyTestCase):
         # Services should show "2 enabled", not "0 enabled"
         self.assertIn("2 enabled", output)
         self.assertNotIn("0 enabled", output)
-        # Standard profile adds a masked service
-        self.assertIn("1 masked", output)
+        # Standard profile masks kdump.service and bluetooth.
+        self.assertIn("2 masked", output)
         # Users section should show users and groups
         self.assertIn("2 user(s)", output)
         self.assertIn("2 group(s)", output)
