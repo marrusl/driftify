@@ -89,7 +89,7 @@ _DNF_REPO_PAT = re.compile(
 
 class _I:
     ROCKET   = "\uf135"
-    SAILBOAT = "⛵"
+    SAILBOAT = "💨"
     CHECK    = "\uf058"   # check-circle
     OK       = "\uf00c"   # check
     WARN     = "\uf071"   # exclamation-triangle
