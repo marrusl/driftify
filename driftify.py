@@ -77,6 +77,13 @@ GHOST_PACKAGE = "words"
 
 GRUB_DEFAULT_PATH = "/etc/default/grub"
 
+# Matches dnf repo-metadata download progress lines, e.g.:
+#   "CentOS Stream 9 - BaseOS    3.2 MB/s |  8.1 MB  00:02"
+_DNF_REPO_PAT = re.compile(
+    r"^(?P<repo>.+?)\s+[\d.,]+\s+(?:[kMGTPE]?i?B)/s\s*\|",
+    re.IGNORECASE,
+)
+
 
 # ── Nerd Font icons ──────────────────────────────────────────────────────────
 
@@ -324,19 +331,40 @@ class Driftify:
             _info(f"Running: {pretty}")
         elif str(cmd[0]) == "dnf":
             # Show subdued progress in quiet mode so the user knows dnf is working
+            if not hasattr(self, "_dnf_meta_shown"):
+                self._dnf_meta_shown = True
+                _sub("fetching repository metadata (may take a moment)")
             parts = [str(c) for c in cmd[1:] if not str(c).startswith("-")]
             _sub(f"dnf {' '.join(parts[:4])}{'...' if len(parts) > 4 else ''}")
         # capture=True means the caller needs stdout; quiet=True means we
         # want to suppress terminal noise — both cases use capture_output=True.
-        # Exception: dnf in quiet mode — let stderr through so the user sees
-        # repo metadata download progress (BaseOS, AppStream, EPEL, etc.).
+        # Exception: dnf in quiet mode — stream stdout line-by-line and surface
+        # repo metadata download progress as subdued _sub() messages.
+        # Merge stderr into stdout: dnf prints progress to stderr when stdout
+        # is not a TTY (common under sudo). Reading only stdout misses it; a
+        # full stderr pipe with no reader can also deadlock the subprocess.
         is_dnf = str(cmd[0]) == "dnf"
         if self.quiet and is_dnf and not capture:
-            result = subprocess.run(
-                cmd, check=check,
-                stdout=subprocess.PIPE, stderr=None,  # stderr streams to terminal
-                text=True,
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
             )
+            diagnostic_lines = []
+            for raw in proc.stdout:
+                line = raw.rstrip("\n")
+                match = _DNF_REPO_PAT.match(line)
+                if match:
+                    repo_name = match.group("repo").rstrip()
+                    _sub(f"fetching {repo_name}")
+                elif line:
+                    diagnostic_lines.append(line)
+            proc.wait()
+            result = subprocess.CompletedProcess(cmd, proc.returncode)
+            if proc.returncode != 0:
+                for line in diagnostic_lines:
+                    _warn(f"  ↳ {line}")
+            if check and proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd)
         else:
             capture_out = capture or self.quiet
             result = subprocess.run(
@@ -954,7 +982,21 @@ class Driftify:
 
         if unique:
             _info(f"Removing {len(unique)} packages...")
-            self.run_cmd(["dnf", "remove", "-y"] + unique, check=False)
+            r = self.run_cmd(
+                ["dnf", "remove", "-y"] + unique,
+                check=False, capture=self.quiet,
+            )
+            if r is not None and r.returncode != 0:
+                detail = ""
+                combined_output = " ".join(
+                    part for part in (r.stdout, r.stderr) if part
+                ).lower()
+                if "protected package" in combined_output:
+                    detail = " (protected-package conflict)"
+                _info(f"Bulk remove failed{detail}; "
+                      "falling back to one-by-one removal...")
+                for pkg in unique:
+                    self.run_cmd(["dnf", "remove", "-y", pkg], check=False)
 
         for repo_pkg in ("epel-release", "rpmfusion-free-release"):
             r = self.run_cmd(

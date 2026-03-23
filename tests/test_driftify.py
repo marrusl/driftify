@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -275,6 +276,162 @@ class TestHelpersAndDryRun(DriftifyTestCase):
                 d._ensure_dir(Path(td))  # already exists
             self._suppress.__enter__()
             self.assertEqual(buf.getvalue(), "")
+
+
+class TestRunCmdDnfQuietMode(DriftifyTestCase):
+    """Tests for the Popen-based dnf repo-metadata surfacing in quiet mode."""
+
+    _METADATA_LINES = [
+        "CentOS Stream 9 - BaseOS    3.2 MB/s |  8.1 MB  00:02",
+        "CentOS Stream 9 - AppStream 2.1 MB/s | 12.4 MB  00:05",
+        "Extra Packages for Enterprise Linux 9    1.4 MB/s |  6.3 MB  00:04",
+    ]
+    _NOISE_LINES = [
+        "Last metadata expiration check: 0:01:23 ago.",
+        "Dependencies resolved.",
+        "================================================================================",
+        " Package           Arch      Version          Repository       Size",
+        "Installing:",
+        " httpd             x86_64    2.4.51-7.el9     appstream        1.5 M",
+        "Transaction Summary",
+        "Total download size: 1.5 M",
+        "Downloading Packages:",
+        "Running transaction check",
+        "Complete!",
+    ]
+
+    def _mock_popen(self, stdout_lines, returncode=0):
+        proc = unittest.mock.MagicMock()
+        proc.stdout = [line + "\n" for line in stdout_lines]
+        proc.returncode = returncode
+        proc.wait = unittest.mock.Mock()
+        return proc
+
+    def _capture_quiet_dnf(self, stdout_lines, returncode=0, check=True):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[], quiet=True)
+        proc = self._mock_popen(stdout_lines, returncode)
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                with unittest.mock.patch("subprocess.Popen", return_value=proc):
+                    d.run_cmd(["dnf", "install", "-y", "httpd"], check=check)
+        finally:
+            self._suppress.__enter__()
+        return buf.getvalue()
+
+    def test_metadata_lines_produce_sub_output(self):
+        output = self._capture_quiet_dnf(self._METADATA_LINES)
+        self.assertIn("fetching CentOS Stream 9 - BaseOS", output)
+        self.assertIn("fetching CentOS Stream 9 - AppStream", output)
+        self.assertIn("fetching Extra Packages for Enterprise Linux 9", output)
+
+    def test_non_metadata_output_suppressed(self):
+        output = self._capture_quiet_dnf(self._NOISE_LINES)
+        self.assertNotIn("Last metadata", output)
+        self.assertNotIn("Dependencies resolved", output)
+        self.assertNotIn("Complete!", output)
+        # Ensure no content from the noise lines leaked through
+        self.assertNotIn("Transaction Summary", output)
+
+    def test_mixed_lines_only_metadata_surfaces(self):
+        all_lines = self._METADATA_LINES + self._NOISE_LINES
+        output = self._capture_quiet_dnf(all_lines)
+        self.assertIn("fetching CentOS Stream 9 - BaseOS", output)
+        self.assertNotIn("Complete!", output)
+
+    def test_lowercase_repo_and_iec_units_surface(self):
+        output = self._capture_quiet_dnf(
+            ["copr:someone/project    1.4 MiB/s |  6.3 MiB  00:04"]
+        )
+        self.assertIn("fetching copr:someone/project", output)
+
+    def test_non_dnf_quiet_uses_subprocess_run_not_popen(self):
+        """Non-dnf commands in quiet mode must not go through the Popen path."""
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[], quiet=True)
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        with unittest.mock.patch("subprocess.run", return_value=mock_result) as mock_run, \
+             unittest.mock.patch("subprocess.Popen") as mock_popen:
+            d.run_cmd(["systemctl", "enable", "httpd"])
+        mock_run.assert_called_once()
+        mock_popen.assert_not_called()
+
+    def test_check_false_nonzero_exit_warns(self):
+        output = self._capture_quiet_dnf([], returncode=1, check=False)
+        self.assertIn("exited 1", output)
+
+    def test_nonmatching_output_surfaces_on_failure(self):
+        output = self._capture_quiet_dnf(
+            ["Curl error (28): Timeout was reached for repo 'appstream'"],
+            returncode=1,
+            check=False,
+        )
+        self.assertIn("Timeout was reached", output)
+
+    def test_check_true_nonzero_exit_raises(self):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[], quiet=True)
+        proc = self._mock_popen([], returncode=1)
+        with unittest.mock.patch("subprocess.Popen", return_value=proc):
+            with self.assertRaises(subprocess.CalledProcessError):
+                d.run_cmd(["dnf", "install", "-y", "no-such-pkg"], check=True)
+
+
+class TestUndoRpmBulkRemoveFallback(DriftifyTestCase):
+    def _run_undo_rpm(self, *, bulk_stdout="", bulk_stderr=""):
+        d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+        bulk_result = subprocess.CompletedProcess(
+            ["dnf", "remove", "-y", "pkg-a", "pkg-b"],
+            1,
+            stdout=bulk_stdout,
+            stderr=bulk_stderr,
+        )
+        calls = []
+
+        def fake_run_cmd(cmd, check=True, capture=False):
+            calls.append((cmd, check, capture))
+            if cmd[:3] == ["dnf", "remove", "-y"] and len(cmd) > 4:
+                return bulk_result
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                with unittest.mock.patch.object(driftify, "PROFILES", ["minimal"]), \
+                     unittest.mock.patch.dict(driftify.BASE_PACKAGES, {"minimal": ["pkg-a", "pkg-b"]}, clear=True), \
+                     unittest.mock.patch.dict(driftify.EPEL_PACKAGES, {"minimal": []}, clear=True), \
+                     unittest.mock.patch.dict(driftify.RPMFUSION_PACKAGES, {"minimal": []}, clear=True), \
+                     unittest.mock.patch.object(d, "run_cmd", side_effect=fake_run_cmd):
+                    d.undo_rpm()
+        finally:
+            self._suppress.__enter__()
+        return buf.getvalue(), calls
+
+    def test_generic_bulk_remove_failure_uses_generic_message(self):
+        output, calls = self._run_undo_rpm(bulk_stderr="failed to download metadata")
+
+        self.assertIn("Bulk remove failed; falling back to one-by-one removal...", output)
+        self.assertNotIn("protected-package conflict", output)
+        self.assertIn((["dnf", "remove", "-y", "pkg-a"], False, False), calls)
+        self.assertIn((["dnf", "remove", "-y", "pkg-b"], False, False), calls)
+
+    def test_protected_package_failure_mentions_protected_packages(self):
+        output, _ = self._run_undo_rpm(
+            bulk_stderr="Error: The operation would result in removing the following protected packages: setup"
+        )
+
+        self.assertIn(
+            "Bulk remove failed (protected-package conflict); falling back to one-by-one removal...",
+            output,
+        )
+
+    def test_non_quiet_bulk_remove_keeps_live_output(self):
+        _, calls = self._run_undo_rpm()
+        self.assertIn(
+            (["dnf", "remove", "-y", "pkg-a", "pkg-b"], False, False),
+            calls,
+        )
 
 
 class TestConfirmation(DriftifyTestCase):
