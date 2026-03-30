@@ -25,7 +25,7 @@ No dependencies beyond Python 3 (ships on every RHEL, CentOS Stream, and Fedora 
 
 ## Usage
 
-```
+```bash
 sudo ./driftify.py                          # standard profile (interactive confirm)
 sudo ./driftify.py -y                       # skip confirmation prompt
 sudo ./driftify.py -q                       # quiet output
@@ -36,7 +36,19 @@ sudo ./driftify.py --dry-run                # preview without changes
 sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
 ```
 
+**Fleet topology fixtures** (for testing `yoinkc architect`):
+
+```bash
+./driftify.py topology --list                              # list available topologies
+./driftify.py topology three-role-overlap /tmp/fixtures/   # generate fixture directory
+./driftify.py topology hardware-split /tmp/hw-fixtures/    # another topology
+```
+
+The `topology` subcommand generates fixture directories with multiple fleet snapshots, each representing a different role or hardware profile. Each fleet contains 3-4 hosts with controlled inter-fleet variance. Designed for testing `yoinkc architect`'s layer decomposition.
+
 ## CLI reference
+
+### Main subcommand (default)
 
 | Flag | Description |
 |------|-------------|
@@ -50,11 +62,33 @@ sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
 | `--yoinkc-output DIR` | Output directory for yoinkc artifacts (default: `./yoinkc-output`) |
 | `--help` | Show help |
 
-### Sections
+#### Sections
 
 Each `--skip-SECTION` flag controls one drift category:
 
 `rpm` `services` `config` `network` `storage` `scheduled` `containers` `nonrpm` `kernel` `selinux` `users` `secrets`
+
+### `topology` subcommand
+
+Generate fleet topology fixture directories for testing `yoinkc architect`.
+
+| Argument | Description |
+|----------|-------------|
+| `topology_name` | Name of the topology to generate (e.g., `three-role-overlap`, `hardware-split`) |
+| `output_dir` | Directory to write fleet fixture subdirectories into |
+
+| Flag | Description |
+|------|-------------|
+| `--list` | List available topologies and exit |
+
+**Example:**
+
+```bash
+./driftify.py topology three-role-overlap /tmp/fixtures/
+./driftify.py topology --list
+```
+
+Each topology generates multiple fleet subdirectories (e.g., `web-servers/`, `db-servers/`, `gpu-nodes/`), each containing 3-4 host snapshots with controlled inter-fleet variance. Within each fleet, hosts are identical except for hostname. The variance is between fleets, designed to exercise `yoinkc architect`'s base/derived layer decomposition.
 
 ## Profiles
 
