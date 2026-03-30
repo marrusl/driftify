@@ -6,11 +6,13 @@ modifications so that every yoinkc inspector has something to detect.
 """
 
 import argparse
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,14 +191,14 @@ FLEET_TOPOLOGIES = {
 
 
 def generate_fleet_topology(topology_name, output_dir):
-    """Generate per-fleet directories of host snapshot JSON files.
+    """Generate one .tar.gz per fleet, each containing inspection-snapshot.json.
 
-    Each host within a fleet gets identical packages but a unique hostname,
-    simulating the post-refine converged state that architect expects.
+    Each tarball is a fleet-level artifact ready for ``yoinkc architect``,
+    with fleet metadata (source hosts, total count) embedded in the snapshot.
 
     Args:
         topology_name: Key into FLEET_TOPOLOGIES.
-        output_dir: Path where fleet subdirectories will be created.
+        output_dir: Path where fleet tarballs will be written.
 
     Raises:
         ValueError: If topology_name is not a known topology.
@@ -209,11 +211,9 @@ def generate_fleet_topology(topology_name, output_dir):
 
     topo = FLEET_TOPOLOGIES[topology_name]
     output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     for fleet in topo["fleets"]:
-        fleet_dir = output_dir / fleet["name"]
-        fleet_dir.mkdir(parents=True, exist_ok=True)
-
         all_packages = fleet["shared_packages"] + fleet["exclusive_packages"]
         packages_added = []
         for pkg_nvra in all_packages:
@@ -237,27 +237,36 @@ def generate_fleet_topology(topology_name, output_dir):
                 "nvra": pkg_nvra,
             })
 
-        for hostname in fleet["hosts"]:
-            snapshot = {
-                "schema_version": 10,
-                "meta": {
-                    "hostname": hostname,
-                    "fleet": fleet["name"],
-                    "topology": topology_name,
-                    "generated_by": "driftify",
+        fleet_name = fleet["name"]
+        snapshot = {
+            "schema_version": 10,
+            "meta": {
+                "hostname": fleet_name,
+                "fleet": {
+                    "source_hosts": fleet["hosts"],
+                    "total_hosts": len(fleet["hosts"]),
                 },
-                "os_release": {
-                    "id": "rhel",
-                    "version_id": "9.4",
-                    "name": "Red Hat Enterprise Linux",
-                },
-                "rpm": {
-                    "base_image": "registry.redhat.io/rhel9/rhel-bootc:9.4",
-                    "packages_added": packages_added,
-                },
-            }
-            snapshot_path = fleet_dir / f"{hostname}.json"
-            snapshot_path.write_text(json.dumps(snapshot, indent=2) + "\n")
+                "topology": topology_name,
+                "generated_by": "driftify",
+            },
+            "os_release": {
+                "id": "rhel",
+                "version_id": "9.4",
+                "name": "Red Hat Enterprise Linux",
+            },
+            "rpm": {
+                "base_image": "registry.redhat.io/rhel9/rhel-bootc:9.4",
+                "packages_added": packages_added,
+            },
+        }
+
+        snapshot_json = json.dumps(snapshot, indent=2) + "\n"
+        tarball_path = output_dir / f"{fleet_name}.tar.gz"
+        with tarfile.open(tarball_path, "w:gz") as tf:
+            data = snapshot_json.encode("utf-8")
+            info = tarfile.TarInfo(name="inspection-snapshot.json")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
 
 
 # ── Nerd Font icons ──────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 """Tests for multi-fleet topology fixture generation."""
 
 import json
+import tarfile
 import pytest
 from pathlib import Path
 
@@ -51,46 +52,41 @@ class TestFleetTopologies:
 
 
 class TestGenerateFleetTopology:
-    def test_generates_output_directory(self, tmp_path):
+    def test_generates_fleet_tarballs(self, tmp_path):
         generate_fleet_topology("three-role-overlap", tmp_path)
-        fleet_dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
-        assert len(fleet_dirs) == 3
+        tarballs = sorted(tmp_path.glob("*.tar.gz"))
+        assert len(tarballs) == 3
+        assert [t.stem.replace(".tar", "") for t in tarballs] == ["app", "db", "web"]
 
-    def test_each_fleet_dir_has_host_snapshots(self, tmp_path):
+    def test_tarball_contains_inspection_snapshot(self, tmp_path):
         generate_fleet_topology("three-role-overlap", tmp_path)
-        for fleet_dir in tmp_path.iterdir():
-            if not fleet_dir.is_dir():
-                continue
-            json_files = list(fleet_dir.glob("*.json"))
-            assert len(json_files) >= 3
+        for tarball in tmp_path.glob("*.tar.gz"):
+            with tarfile.open(tarball, "r:gz") as tf:
+                names = tf.getnames()
+                assert "inspection-snapshot.json" in names
 
-    def test_hosts_within_fleet_share_packages(self, tmp_path):
+    def test_snapshot_has_fleet_metadata(self, tmp_path):
         generate_fleet_topology("three-role-overlap", tmp_path)
-        for fleet_dir in tmp_path.iterdir():
-            if not fleet_dir.is_dir():
-                continue
-            snapshots = []
-            for f in fleet_dir.glob("*.json"):
-                snapshots.append(json.loads(f.read_text()))
-            if len(snapshots) < 2:
-                continue
-            pkg_sets = []
-            for snap in snapshots:
-                pkgs = {p["name"] for p in snap.get("rpm", {}).get("packages_added", [])}
-                pkg_sets.append(pkgs)
-            for ps in pkg_sets[1:]:
-                assert ps == pkg_sets[0], f"Hosts in {fleet_dir.name} have different packages"
+        tarball = tmp_path / "web.tar.gz"
+        with tarfile.open(tarball, "r:gz") as tf:
+            snap = json.load(tf.extractfile("inspection-snapshot.json"))
+        assert snap["meta"]["hostname"] == "web"
+        assert snap["meta"]["fleet"]["total_hosts"] == 4
+        assert "web-prod-01" in snap["meta"]["fleet"]["source_hosts"]
 
-    def test_hosts_have_different_hostnames(self, tmp_path):
+    def test_snapshot_has_correct_packages(self, tmp_path):
         generate_fleet_topology("three-role-overlap", tmp_path)
-        for fleet_dir in tmp_path.iterdir():
-            if not fleet_dir.is_dir():
-                continue
-            hostnames = set()
-            for f in fleet_dir.glob("*.json"):
-                snap = json.loads(f.read_text())
-                hostnames.add(snap["meta"]["hostname"])
-            assert len(hostnames) >= 3
+        for tarball in tmp_path.glob("*.tar.gz"):
+            with tarfile.open(tarball, "r:gz") as tf:
+                snap = json.load(tf.extractfile("inspection-snapshot.json"))
+            pkgs = {p["name"] for p in snap["rpm"]["packages_added"]}
+            # All fleets should have shared base packages
+            assert "coreutils" in pkgs
+
+    def test_hardware_split_generates_two_tarballs(self, tmp_path):
+        generate_fleet_topology("hardware-split", tmp_path)
+        tarballs = list(tmp_path.glob("*.tar.gz"))
+        assert len(tarballs) == 2
 
     def test_invalid_topology_name_raises(self):
         with pytest.raises(ValueError, match="Unknown topology"):
