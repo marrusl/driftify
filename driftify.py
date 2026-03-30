@@ -3226,8 +3226,7 @@ def _run_topology(argv: list[str]) -> None:
     topo = FLEET_TOPOLOGIES[args.topology_name]
     print(f"Generated topology '{args.topology_name}' in {output_dir}")
     for fleet in topo["fleets"]:
-        fleet_dir = output_dir / fleet["name"]
-        n_hosts = len(list(fleet_dir.glob("*.json")))
+        n_hosts = len(fleet["hosts"])
         print(f"  {fleet['name']:20s} {n_hosts} hosts")
 
 
