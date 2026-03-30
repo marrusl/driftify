@@ -88,7 +88,7 @@ Generate fleet topology fixture directories for testing `yoinkc architect`.
 ./driftify.py topology --list
 ```
 
-Each topology generates multiple fleet subdirectories (e.g., `web-servers/`, `db-servers/`, `gpu-nodes/`), each containing 3-4 host snapshots with controlled inter-fleet variance. Within each fleet, hosts are identical except for hostname. The variance is between fleets, designed to exercise `yoinkc architect`'s base/derived layer decomposition.
+Each topology generates fleet-ready tarballs (e.g., `web-servers.tar.gz`, `db-servers.tar.gz`, `gpu-nodes.tar.gz`), each containing a merged `inspection-snapshot.json` representing 3-4 hosts with controlled inter-fleet variance. Within each fleet, the represented hosts are identical except for hostname. The variance is between fleets, designed to exercise `yoinkc architect`'s base/derived layer decomposition.
 
 ## Profiles
 
