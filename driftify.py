@@ -84,6 +84,174 @@ _DNF_REPO_PAT = re.compile(
     re.IGNORECASE,
 )
 
+# ── Multi-fleet topology fixtures ────────────────────────────────────────────
+
+_SHARED_BASE_PACKAGES = [
+    "bash-5.1.8-9.el9.x86_64",
+    "coreutils-8.32-35.el9.x86_64",
+    "glibc-2.34-83.el9.x86_64",
+    "systemd-252-32.el9.x86_64",
+    "openssl-libs-3.0.7-27.el9.x86_64",
+    "curl-7.76.1-29.el9.x86_64",
+    "rpm-4.16.1.3-27.el9.x86_64",
+    "dnf-4.14.0-9.el9.x86_64",
+    "python3-3.9.18-3.el9.x86_64",
+    "NetworkManager-1.44.0-5.el9.x86_64",
+    "firewalld-1.2.5-2.el9.noarch",
+    "vim-minimal-8.2.2637-20.el9.x86_64",
+    "openssh-clients-8.7p1-38.el9.x86_64",
+    "openssh-server-8.7p1-38.el9.x86_64",
+    "sudo-1.9.5p2-10.el9.x86_64",
+    "tar-1.34-6.el9.x86_64",
+    "gzip-1.12-1.el9.x86_64",
+    "xz-5.2.5-8.el9.x86_64",
+    "sed-4.8-9.el9.x86_64",
+    "grep-3.7-3.el9.x86_64",
+    "findutils-4.8.0-6.el9.x86_64",
+    "procps-ng-3.3.17-13.el9.x86_64",
+    "iproute-6.2.0-5.el9.x86_64",
+    "util-linux-2.37.4-18.el9.x86_64",
+    "dbus-1.12.20-8.el9.x86_64",
+    "chrony-4.3-1.el9.x86_64",
+    "audit-3.0.7-104.el9.x86_64",
+    "rsyslog-8.2102.0-117.el9.x86_64",
+    "polkit-0.117-11.el9.x86_64",
+    "sssd-2.9.1-4.el9.x86_64",
+]
+
+FLEET_TOPOLOGIES = {
+    "three-role-overlap": {
+        "description": "Three fleets (web, app, db) with ~85% shared base and role-specific extras",
+        "fleets": [
+            {
+                "name": "web",
+                "hosts": ["web-prod-01", "web-prod-02", "web-prod-03", "web-prod-04"],
+                "shared_packages": list(_SHARED_BASE_PACKAGES),
+                "exclusive_packages": [
+                    "httpd-2.4.57-5.el9.x86_64",
+                    "mod_ssl-2.4.57-5.el9.x86_64",
+                    "nginx-1.22.1-4.el9.x86_64",
+                    "certbot-2.6.0-1.el9.noarch",
+                    "varnish-7.3.0-1.el9.x86_64",
+                ],
+            },
+            {
+                "name": "app",
+                "hosts": ["app-prod-01", "app-prod-02", "app-prod-03"],
+                "shared_packages": list(_SHARED_BASE_PACKAGES),
+                "exclusive_packages": [
+                    "java-17-openjdk-headless-17.0.9.0.9-2.el9.x86_64",
+                    "tomcat-9.0.62-6.el9.noarch",
+                    "nodejs-18.18.2-1.el9.x86_64",
+                    "redis-7.0.12-1.el9.x86_64",
+                ],
+            },
+            {
+                "name": "db",
+                "hosts": ["db-prod-01", "db-prod-02", "db-prod-03"],
+                "shared_packages": list(_SHARED_BASE_PACKAGES),
+                "exclusive_packages": [
+                    "postgresql-server-15.4-1.el9.x86_64",
+                    "postgresql-contrib-15.4-1.el9.x86_64",
+                    "pgaudit-1.7.0-1.el9.x86_64",
+                    "barman-3.7.0-1.el9.noarch",
+                ],
+            },
+        ],
+    },
+    "hardware-split": {
+        "description": "Two fleets split by hardware: GPU compute nodes vs standard nodes",
+        "fleets": [
+            {
+                "name": "gpu",
+                "hosts": ["gpu-node-01", "gpu-node-02", "gpu-node-03"],
+                "shared_packages": list(_SHARED_BASE_PACKAGES),
+                "exclusive_packages": [
+                    "nvidia-driver-535.104.05-1.el9.x86_64",
+                    "cuda-toolkit-12-2-12.2.1-1.x86_64",
+                    "nvidia-fabric-manager-535.104.05-1.el9.x86_64",
+                    "libnccl-2.18.3-1.el9.x86_64",
+                ],
+            },
+            {
+                "name": "standard",
+                "hosts": ["std-node-01", "std-node-02", "std-node-03"],
+                "shared_packages": list(_SHARED_BASE_PACKAGES),
+                "exclusive_packages": [
+                    "tuned-2.20.0-1.el9.noarch",
+                    "pcp-6.0.5-3.el9.x86_64",
+                    "smartmontools-7.3-2.el9.x86_64",
+                ],
+            },
+        ],
+    },
+}
+
+
+def generate_fleet_topology(topology_name, output_dir):
+    """Generate per-fleet directories of host snapshot JSON files.
+
+    Each host within a fleet gets identical packages but a unique hostname,
+    simulating the post-refine converged state that architect expects.
+
+    Args:
+        topology_name: Key into FLEET_TOPOLOGIES.
+        output_dir: Path where fleet subdirectories will be created.
+
+    Raises:
+        ValueError: If topology_name is not a known topology.
+    """
+    if topology_name not in FLEET_TOPOLOGIES:
+        raise ValueError(
+            f"Unknown topology '{topology_name}'. "
+            f"Available: {', '.join(sorted(FLEET_TOPOLOGIES))}"
+        )
+
+    topo = FLEET_TOPOLOGIES[topology_name]
+    output_dir = Path(output_dir)
+
+    for fleet in topo["fleets"]:
+        fleet_dir = output_dir / fleet["name"]
+        fleet_dir.mkdir(parents=True, exist_ok=True)
+
+        all_packages = fleet["shared_packages"] + fleet["exclusive_packages"]
+        packages_added = []
+        for pkg_nvra in all_packages:
+            # Parse NVRA: name-version-release.arch
+            # Split from the right to handle names with hyphens
+            parts = pkg_nvra.rsplit("-", 2)
+            if len(parts) == 3:
+                name, version, release_arch = parts
+                release, arch = release_arch.rsplit(".", 1) if "." in release_arch else (release_arch, "x86_64")
+            else:
+                name = pkg_nvra
+                version = "0"
+                release_arch = "0.el9.x86_64"
+                release, arch = release_arch.rsplit(".", 1)
+
+            packages_added.append({
+                "name": name,
+                "version": version,
+                "release": release,
+                "arch": arch,
+                "nvra": pkg_nvra,
+            })
+
+        for hostname in fleet["hosts"]:
+            snapshot = {
+                "meta": {
+                    "hostname": hostname,
+                    "fleet": fleet["name"],
+                    "topology": topology_name,
+                    "generated_by": "driftify",
+                },
+                "rpm": {
+                    "packages_added": packages_added,
+                },
+            }
+            snapshot_path = fleet_dir / f"{hostname}.json"
+            snapshot_path.write_text(json.dumps(snapshot, indent=2) + "\n")
+
 
 # ── Nerd Font icons ──────────────────────────────────────────────────────────
 
