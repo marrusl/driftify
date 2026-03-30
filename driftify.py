@@ -239,13 +239,20 @@ def generate_fleet_topology(topology_name, output_dir):
 
         for hostname in fleet["hosts"]:
             snapshot = {
+                "schema_version": 10,
                 "meta": {
                     "hostname": hostname,
                     "fleet": fleet["name"],
                     "topology": topology_name,
                     "generated_by": "driftify",
                 },
+                "os_release": {
+                    "id": "rhel",
+                    "version_id": "9.4",
+                    "name": "Red Hat Enterprise Linux",
+                },
                 "rpm": {
+                    "base_image": "registry.redhat.io/rhel9/rhel-bootc:9.4",
                     "packages_added": packages_added,
                 },
             }
