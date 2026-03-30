@@ -4,7 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
-from driftify import FLEET_TOPOLOGIES, generate_fleet_topology
+from driftify import FLEET_TOPOLOGIES, generate_fleet_topology, build_topology_parser
 
 
 class TestFleetTopologies:
@@ -95,3 +95,29 @@ class TestGenerateFleetTopology:
     def test_invalid_topology_name_raises(self):
         with pytest.raises(ValueError, match="Unknown topology"):
             generate_fleet_topology("nonexistent", Path("/tmp"))
+
+
+class TestTopologyCLI:
+    def test_parse_positional_args(self):
+        parser = build_topology_parser()
+        args = parser.parse_args(["three-role-overlap", "/tmp/out"])
+        assert args.topology_name == "three-role-overlap"
+        assert args.output_dir == "/tmp/out"
+
+    def test_parse_list_flag(self):
+        parser = build_topology_parser()
+        args = parser.parse_args(["--list"])
+        assert args.list is True
+        assert args.topology_name is None
+
+    def test_list_flag_with_no_positionals(self):
+        parser = build_topology_parser()
+        args = parser.parse_args(["--list"])
+        assert args.list is True
+        assert args.output_dir is None
+
+    def test_parse_hardware_split(self):
+        parser = build_topology_parser()
+        args = parser.parse_args(["hardware-split", "/tmp/hw"])
+        assert args.topology_name == "hardware-split"
+        assert args.output_dir == "/tmp/hw"

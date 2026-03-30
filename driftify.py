@@ -3160,7 +3160,67 @@ examples:
     return p
 
 
+def build_topology_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="driftify topology",
+        description="Generate fleet topology fixture directories for architect testing.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  ./driftify.py topology three-role-overlap /tmp/fixtures/
+  ./driftify.py topology hardware-split /tmp/hw-fixtures/
+  ./driftify.py topology --list
+""",
+    )
+    p.add_argument(
+        "--list", action="store_true",
+        help="list available topologies and exit",
+    )
+    p.add_argument(
+        "topology_name", nargs="?",
+        help="name of the topology to generate",
+    )
+    p.add_argument(
+        "output_dir", nargs="?",
+        help="directory to write fleet fixture subdirectories into",
+    )
+    return p
+
+
+def _run_topology(argv: list[str]) -> None:
+    """Handle the 'topology' subcommand."""
+    parser = build_topology_parser()
+    args = parser.parse_args(argv)
+
+    if args.list:
+        print("Available topologies:")
+        for name, topo in sorted(FLEET_TOPOLOGIES.items()):
+            n_fleets = len(topo["fleets"])
+            total_hosts = sum(len(f["hosts"]) for f in topo["fleets"])
+            print(f"  {name:25s} {topo['description']}")
+            print(f"  {'':25s} ({n_fleets} fleets, {total_hosts} hosts)")
+        return
+
+    if not args.topology_name or not args.output_dir:
+        parser.error("topology_name and output_dir are required (or use --list)")
+
+    output_dir = Path(args.output_dir)
+    generate_fleet_topology(args.topology_name, output_dir)
+
+    topo = FLEET_TOPOLOGIES[args.topology_name]
+    print(f"Generated topology '{args.topology_name}' in {output_dir}")
+    for fleet in topo["fleets"]:
+        fleet_dir = output_dir / fleet["name"]
+        n_hosts = len(list(fleet_dir.glob("*.json")))
+        print(f"  {fleet['name']:20s} {n_hosts} hosts")
+
+
 def main() -> None:
+    # Handle 'topology' subcommand before main parser
+    if len(sys.argv) >= 2 and sys.argv[1] == "topology":
+        _run_topology(sys.argv[2:])
+        return
+
     parser = build_parser()
     args = parser.parse_args()
 
