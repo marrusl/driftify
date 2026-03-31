@@ -528,33 +528,37 @@ class Driftify:
         # is not a TTY (common under sudo). Reading only stdout misses it; a
         # full stderr pipe with no reader can also deadlock the subprocess.
         is_dnf = str(cmd[0]) == "dnf"
-        if self.quiet and is_dnf and not capture:
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
-            diagnostic_lines = []
-            for raw in proc.stdout:
-                line = raw.rstrip("\n")
-                match = _DNF_REPO_PAT.match(line)
-                if match:
-                    repo_name = match.group("repo").rstrip()
-                    _sub(f"fetching {repo_name}")
-                elif line:
-                    diagnostic_lines.append(line)
-            proc.wait()
-            result = subprocess.CompletedProcess(cmd, proc.returncode)
-            if proc.returncode != 0:
-                for line in diagnostic_lines:
-                    _warn(f"  ↳ {line}")
-            if check and proc.returncode != 0:
-                raise subprocess.CalledProcessError(proc.returncode, cmd)
-        else:
-            capture_out = capture or self.quiet
-            result = subprocess.run(
-                cmd, check=check,
-                capture_output=capture_out, text=capture_out,
-            )
+        try:
+            if self.quiet and is_dnf and not capture:
+                proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+                diagnostic_lines = []
+                for raw in proc.stdout:
+                    line = raw.rstrip("\n")
+                    match = _DNF_REPO_PAT.match(line)
+                    if match:
+                        repo_name = match.group("repo").rstrip()
+                        _sub(f"fetching {repo_name}")
+                    elif line:
+                        diagnostic_lines.append(line)
+                proc.wait()
+                result = subprocess.CompletedProcess(cmd, proc.returncode)
+                if proc.returncode != 0:
+                    for line in diagnostic_lines:
+                        _warn(f"  ↳ {line}")
+                if check and proc.returncode != 0:
+                    raise subprocess.CalledProcessError(proc.returncode, cmd)
+            else:
+                capture_out = capture or self.quiet
+                result = subprocess.run(
+                    cmd, check=check,
+                    capture_output=capture_out, text=capture_out,
+                )
+        except FileNotFoundError:
+            _warn(f"command not found: {cmd[0]}")
+            result = subprocess.CompletedProcess(cmd, 127)
         if not check and result.returncode != 0:
             _warn(f"  ↳ exited {result.returncode}: {pretty}")
         return result
