@@ -82,7 +82,7 @@ GRUB_DEFAULT_PATH = "/etc/default/grub"
 # Matches dnf repo-metadata download progress lines, e.g.:
 #   "CentOS Stream 9 - BaseOS    3.2 MB/s |  8.1 MB  00:02"
 _DNF_REPO_PAT = re.compile(
-    r"^(?P<repo>.+?)\s+[\d.,]+\s+(?:[kMGTPE]?i?B)/s\s*\|",
+    r"^(?P<repo>.+)\s+[\d.,]+\s+(?:[kMGTPE]?i?B)/s\s*\|",
     re.IGNORECASE,
 )
 
