@@ -530,9 +530,12 @@ class Driftify:
         is_dnf = str(cmd[0]) == "dnf"
         try:
             if self.quiet and is_dnf and not capture:
+                # Set COLUMNS to prevent dnf from truncating package names in progress output
+                env = os.environ.copy()
+                env["COLUMNS"] = "999"
                 proc = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
+                    text=True, bufsize=1, env=env,
                 )
                 diagnostic_lines = []
                 for raw in proc.stdout:
