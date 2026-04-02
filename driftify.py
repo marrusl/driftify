@@ -592,6 +592,22 @@ class Driftify:
             path.unlink(missing_ok=True)
         _info(f"Removed {path}")
 
+    def _user_exists(self, username: str) -> bool:
+        """Check if a user exists on the system (silent probe)."""
+        if self.dry_run:
+            return False
+        return subprocess.run(
+            ["id", username], capture_output=True, check=False,
+        ).returncode == 0
+
+    def _group_exists(self, groupname: str) -> bool:
+        """Check if a group exists on the system (silent probe)."""
+        if self.dry_run:
+            return False
+        return subprocess.run(
+            ["getent", "group", groupname], capture_output=True, check=False,
+        ).returncode == 0
+
     def _write_managed_text(self, path_str: str, content: str, mode: int = 0o644) -> None:
         """Write a text file idempotently.
 
@@ -1336,8 +1352,20 @@ class Driftify:
         # DNF module streams and version locks (kitchen-sink)
         # Exercises yoinkc's detection of enabled module streams and version locks
         if self.needs_profile("kitchen-sink"):
-            _info(f"{_I.PUZZLE}  Enabling DNF module stream: postgresql:15")
-            self.run_cmd(["dnf", "module", "enable", "-y", "postgresql:15"], check=False)
+            # Check if dnf module streams are available before enabling
+            if self.dry_run:
+                _info(f"{_I.PUZZLE}  Enabling DNF module stream: postgresql:15")
+                self.run_cmd(["dnf", "module", "enable", "-y", "postgresql:15"], check=False)
+            else:
+                mod_check = subprocess.run(
+                    ["dnf", "module", "list", "postgresql"],
+                    capture_output=True, text=True, check=False,
+                )
+                if mod_check.returncode == 0 and "postgresql" in mod_check.stdout:
+                    _info(f"{_I.PUZZLE}  Enabling DNF module stream: postgresql:15")
+                    self.run_cmd(["dnf", "module", "enable", "-y", "postgresql:15"], check=False)
+                else:
+                    _sub("dnf module streams not available — skipping postgresql:15")
 
             _info(f"{_I.PACKAGE}  Installing DNF version lock plugin")
             self.run_cmd(["dnf", "install", "-y", "dnf-plugin-versionlock"], check=False)
@@ -2026,32 +2054,44 @@ domain=INTERNAL
         self._next_step("users")
 
         # Minimal: create appgroup then appuser with that primary group
-        _info(f"{_I.USERS}  Creating group appgroup (GID 1001)")
-        self.run_cmd(["groupadd", "-g", "1001", "appgroup"], check=False)
-        _info(f"{_I.USERS}  Creating user appuser (UID 1001, primary: appgroup)")
-        result = self.run_cmd(
-            ["useradd", "-u", "1001", "-g", "appgroup", "-m",
-             "-c", "App User", "appuser"],
-            check=False,
-        )
-        if not self.dry_run and result is not None and result.returncode != 0:
-            _warn("useradd appuser failed — skipping SSH keys, chown, and sudoers")
-            self._appuser_created = False
-
-        if self.needs_profile("standard"):
-            _info(f"{_I.USERS}  Creating user dbuser (UID 1002, nologin)")
+        if self._group_exists("appgroup"):
+            _sub("appgroup already exists — skipping")
+        else:
+            _info(f"{_I.USERS}  Creating group appgroup (GID 1001)")
+            self.run_cmd(["groupadd", "-g", "1001", "appgroup"], check=False)
+        if self._user_exists("appuser"):
+            _sub("appuser already exists — skipping creation")
+        else:
+            _info(f"{_I.USERS}  Creating user appuser (UID 1001, primary: appgroup)")
             result = self.run_cmd(
-                ["useradd", "-u", "1002", "-s", "/sbin/nologin", "-M",
-                 "-c", "DB Service Account", "dbuser"],
+                ["useradd", "-u", "1001", "-g", "appgroup", "-m",
+                 "-c", "App User", "appuser"],
                 check=False,
             )
             if not self.dry_run and result is not None and result.returncode != 0:
-                _warn("useradd dbuser failed")
-                self._dbuser_created = False
+                _warn("useradd appuser failed — skipping SSH keys, chown, and sudoers")
+                self._appuser_created = False
+
+        if self.needs_profile("standard"):
+            if self._user_exists("dbuser"):
+                _sub("dbuser already exists — skipping creation")
+            else:
+                _info(f"{_I.USERS}  Creating user dbuser (UID 1002, nologin)")
+                result = self.run_cmd(
+                    ["useradd", "-u", "1002", "-s", "/sbin/nologin", "-M",
+                     "-c", "DB Service Account", "dbuser"],
+                    check=False,
+                )
+                if not self.dry_run and result is not None and result.returncode != 0:
+                    _warn("useradd dbuser failed")
+                    self._dbuser_created = False
 
             # Shared developers group with supplementary membership
-            _info(f"{_I.USERS}  Creating group developers (GID 1050) with appuser, dbuser")
-            self.run_cmd(["groupadd", "-g", "1050", "developers"], check=False)
+            if self._group_exists("developers"):
+                _sub("developers group already exists — skipping")
+            else:
+                _info(f"{_I.USERS}  Creating group developers (GID 1050) with appuser, dbuser")
+                self.run_cmd(["groupadd", "-g", "1050", "developers"], check=False)
             if self._appuser_created:
                 self.run_cmd(
                     ["usermod", "-a", "-G", "developers", "appuser"],
@@ -2270,11 +2310,19 @@ domain=INTERNAL
             self._ensure_dir(Path(git_dir))
             self.run_cmd(["git", "-C", git_dir, "init", "--quiet"],
                          check=False)
-            self.run_cmd(
-                ["git", "-C", git_dir, "remote", "add", "origin",
-                 "https://github.com/example/some-tool.git"],
-                check=False,
+            # Check if remote already exists before adding (silent probe)
+            remote_check = subprocess.run(
+                ["git", "-C", git_dir, "remote", "get-url", "origin"],
+                capture_output=True, check=False,
             )
+            if remote_check.returncode == 0:
+                _sub("git remote 'origin' already exists — skipping")
+            else:
+                self.run_cmd(
+                    ["git", "-C", git_dir, "remote", "add", "origin",
+                     "https://github.com/example/some-tool.git"],
+                    check=False,
+                )
 
             # Shell script at /usr/local/bin — non-binary script detection
             self._write_managed_text(
@@ -2678,7 +2726,7 @@ domain=INTERNAL
             capture_output=True, text=True, check=False,
         )
         if r.returncode != 0:
-            _warn("alternatives --display python3 failed — skipping alternatives change")
+            _sub("no python3 alternatives registered — skipping")
             return
         current_match = re.search(r"link currently points to (\S+)", r.stdout)
         current = current_match.group(1) if current_match else None
@@ -2706,6 +2754,10 @@ domain=INTERNAL
         self.run_cmd(["restorecon", "-Rv", "/srv/www"], check=False)
 
     def _install_mixed_arch(self) -> None:
+        import platform
+        if platform.machine() != "x86_64":
+            _sub(f"skipping glibc.i686 — not available on {platform.machine()}")
+            return
         _info(f"{_I.PACKAGE}  Installing glibc.i686 (32-bit compatibility)")
         self.run_cmd(["dnf", "install", "-y", "glibc.i686"], check=False)
 
@@ -2807,6 +2859,9 @@ domain=INTERNAL
         self._remove_path("/srv/www")
 
     def _undo_mixed_arch(self) -> None:
+        import platform
+        if platform.machine() != "x86_64":
+            return
         _info("Removing glibc.i686")
         self.run_cmd(["dnf", "remove", "-y", "glibc.i686"], check=False)
 
