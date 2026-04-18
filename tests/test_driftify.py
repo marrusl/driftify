@@ -561,26 +561,26 @@ class TestConfirmation(DriftifyTestCase):
         args = p.parse_args([])
         self.assertFalse(args.yes)
 
-    def test_run_yoinkc_flag_parsed(self):
+    def test_run_inspectah_flag_parsed(self):
         p = driftify.build_parser()
-        args = p.parse_args(["--run-yoinkc"])
-        self.assertTrue(args.run_yoinkc)
-        self.assertEqual(args.yoinkc_output, "./yoinkc-output")
-        args = p.parse_args(["--run-yoinkc", "--yoinkc-output", "/tmp/out"])
-        self.assertEqual(args.yoinkc_output, "/tmp/out")
+        args = p.parse_args(["--run-inspectah"])
+        self.assertTrue(args.run_inspectah)
+        self.assertEqual(args.inspectah_output, "./inspectah-output")
+        args = p.parse_args(["--run-inspectah", "--inspectah-output", "/tmp/out"])
+        self.assertEqual(args.inspectah_output, "/tmp/out")
         args = p.parse_args([])
-        self.assertFalse(args.run_yoinkc)
+        self.assertFalse(args.run_inspectah)
 
-    def test_launch_yoinkc_dry_run(self):
+    def test_launch_inspectah_dry_run(self):
         d = driftify.Driftify("standard", dry_run=True, skip_sections=[],
-                              run_yoinkc=True, yoinkc_output="/tmp/test-out")
+                              run_inspectah=True, inspectah_output="/tmp/test-out")
         self._suppress.__exit__(None, None, None)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            d._launch_yoinkc()
+            d._launch_inspectah()
         self._suppress.__enter__()
         output = buf.getvalue()
-        self.assertIn("run-yoinkc.sh", output)
+        self.assertIn("run-inspectah.sh", output)
         self.assertIn("/tmp/test-out", output)
 
     def test_quiet_flag_parsed(self):
@@ -1181,7 +1181,7 @@ class TestContainers(DriftifyTestCase):
                           files_written.get("docker-compose.yml", ""))
 
     def test_containers_webapp_has_required_quadlet_fields(self):
-        """webapp.container must include all fields yoinkc parses."""
+        """webapp.container must include all fields inspectah parses."""
         with tempfile.TemporaryDirectory() as td:
             driftify.STAMP_PATH = Path(td) / "stamp.json"
             d = driftify.Driftify("minimal", dry_run=False, skip_sections=[])
