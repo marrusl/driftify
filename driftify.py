@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 """driftify — apply synthetic drift to a fresh RHEL/CentOS Stream or Fedora system.
 
-Companion tool to yoinkc.  Runs on a clean host and applies curated system
-modifications so that every yoinkc inspector has something to detect.
+Companion tool to inspectah.  Runs on a clean host and applies curated system
+modifications so that every inspectah inspector has something to detect.
 """
 
 import argparse
@@ -193,7 +193,7 @@ FLEET_TOPOLOGIES = {
 def generate_fleet_topology(topology_name, output_dir):
     """Generate one .tar.gz per fleet, each containing inspection-snapshot.json.
 
-    Each tarball is a fleet-level artifact ready for ``yoinkc architect``,
+    Each tarball is a fleet-level artifact ready for ``inspectah architect``,
     with fleet metadata (source hosts, total count) embedded in the snapshot.
 
     Args:
@@ -463,14 +463,14 @@ class Driftify:
         "users", "secrets",
     }
 
-    _YOINKC_SCRIPT_URL = (
-        "https://raw.githubusercontent.com/marrusl/yoinkc/main/run-yoinkc.sh"
+    _INSPECTAH_SCRIPT_URL = (
+        "https://raw.githubusercontent.com/marrusl/inspectah/main/run-inspectah.sh"
     )
 
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
                  yes: bool = False,
                  quiet: bool = False, verbose: bool = False,
-                 run_yoinkc: bool = False, yoinkc_output: str = "./yoinkc-output"):
+                 run_inspectah: bool = False, inspectah_output: str = "./inspectah-output"):
         self.profile = profile
         self.dry_run = dry_run
         self.skip = set(skip_sections)
@@ -480,8 +480,8 @@ class Driftify:
         # subprocess output currently passes through directly so --verbose
         # has no additional effect today.
         self.verbose = verbose
-        self.run_yoinkc = run_yoinkc
-        self.yoinkc_output = yoinkc_output
+        self.run_inspectah = run_inspectah
+        self.inspectah_output = inspectah_output
         self.stamp = StampFile()
         self.os_id, self.os_major = detect_os()
         self._t0 = None
@@ -971,8 +971,8 @@ class Driftify:
 
         self._print_summary()
 
-        if self.run_yoinkc:
-            self._launch_yoinkc()
+        if self.run_inspectah:
+            self._launch_inspectah()
 
     # ── Undo ──────────────────────────────────────────────────────────────
 
@@ -1334,7 +1334,7 @@ class Driftify:
 
         # Ghost package: install, drop orphaned config, remove (standard+)
         # This creates a dnf history entry AND an unowned /etc config file,
-        # both of which yoinkc's RPM inspector is expected to detect.
+        # both of which inspectah's RPM inspector is expected to detect.
         if self.needs_profile("standard"):
             _info(f"{_I.RECYCLE}  Ghost package: install + orphaned config "
                   f"+ remove '{GHOST_PACKAGE}'")
@@ -1343,14 +1343,14 @@ class Driftify:
                 "/etc/words.conf",
                 "# Simulated orphaned config — driftify synthetic fixture\n"
                 "# This file is left behind after 'words' is removed,\n"
-                "# exercising yoinkc unowned-file and dnf-ghost detection.\n"
+                "# exercising inspectah unowned-file and dnf-ghost detection.\n"
                 "dictionary = /usr/share/dict/words\n"
                 "max_suggestions = 10\n",
             )
             self.run_cmd(["dnf", "remove", "-y", GHOST_PACKAGE], check=False)
 
         # DNF module streams and version locks (kitchen-sink)
-        # Exercises yoinkc's detection of enabled module streams and version locks
+        # Exercises inspectah's detection of enabled module streams and version locks
         if self.needs_profile("kitchen-sink"):
             # Check if dnf module streams are available before enabling
             if self.dry_run:
@@ -1496,7 +1496,7 @@ class Driftify:
             )
 
             # Overwrite standard's limits.conf with higher limits — this is
-            # the cross-profile collision that lets yoinkc detect 2 variants
+            # the cross-profile collision that lets inspectah detect 2 variants
             # for httpd.service.d/limits.conf in fleet aggregation.
             self._ensure_dir(Path("/etc/systemd/system/httpd.service.d"))
             _info(f"{_I.WRENCH}  Overwriting httpd.service.d/limits.conf drop-in (kitchen-sink)")
@@ -1933,7 +1933,7 @@ domain=INTERNAL
         self._write_managed_text(
             "/etc/cron.d/backup-daily",
             "# Daily backup — driftify synthetic fixture\n"
-            "# yoinkc should convert this to a systemd timer\n"
+            "# inspectah should convert this to a systemd timer\n"
             "0 2 * * * root /usr/local/bin/backup.sh"
             " >> /var/log/myapp/backup.log 2>&1\n",
         )
@@ -1948,7 +1948,7 @@ domain=INTERNAL
         )
 
         if self.needs_profile("standard"):
-            # System crontab entry — exercises yoinkc's /etc/crontab parsing
+            # System crontab entry — exercises inspectah's /etc/crontab parsing
             # path (distinct from /etc/cron.d/ which is covered at minimal)
             self._append_managed_block(
                 "/etc/crontab",
@@ -2173,7 +2173,7 @@ domain=INTERNAL
             "PublishPort=8443:8443\n"
             "Environment=APP_ENV=production\n"
             "Environment=LOG_LEVEL=info\n"
-            "# This fake secret should trigger yoinkc's redaction\n"
+            "# This fake secret should trigger inspectah's redaction\n"
             "Environment=DATABASE_URL=postgresql://dbuser:s3cret@db.internal:5432/myapp\n"
             "Volume=/var/lib/myapp/data:/app/data:Z\n"
             "Volume=/var/log/myapp:/app/logs:Z\n"
@@ -2296,7 +2296,7 @@ domain=INTERNAL
             check=False,
         )
 
-        # Minimal: download yq as a real Go binary (gives yoinkc a
+        # Minimal: download yq as a real Go binary (gives inspectah a
         # .note.go.buildid ELF section to detect)
         self._download_go_probe()
 
@@ -2329,7 +2329,7 @@ domain=INTERNAL
                 "/usr/local/bin/deploy.sh",
                 "#!/bin/sh\n"
                 "# Deploy script — driftify synthetic fixture\n"
-                "# yoinkc should detect this as a non-RPM script\n"
+                "# inspectah should detect this as a non-RPM script\n"
                 "APP_DIR=/opt/myapp\n"
                 "VENV=${APP_DIR}/venv\n"
                 'echo "[deploy] Stopping service..."\n'
@@ -2348,7 +2348,7 @@ domain=INTERNAL
             self._install_ruby_gems()
 
             # Mystery binary: stripped copy of /usr/bin/true — no metadata,
-            # no build ID; yoinkc should flag this as unknown provenance
+            # no build ID; inspectah should flag this as unknown provenance
             mystery = "/usr/local/bin/mystery-tool"
             _info(f"{_I.PUZZLE}  Creating mystery binary at {mystery}")
             if not self.dry_run:
@@ -2430,7 +2430,7 @@ domain=INTERNAL
         self._write_managed_text(
             "/etc/sysctl.d/99-driftify.conf",
             "# Network performance tuning — driftify synthetic fixture\n"
-            "# yoinkc should detect these as non-default sysctl values\n"
+            "# inspectah should detect these as non-default sysctl values\n"
             "net.core.somaxconn = 4096\n"
             "net.ipv4.tcp_max_syn_backlog = 8192\n"
             "net.ipv4.ip_local_port_range = 1024 65535\n"
@@ -2447,18 +2447,18 @@ domain=INTERNAL
             self._write_managed_text(
                 "/etc/modules-load.d/driftify.conf",
                 "# Kernel modules — driftify synthetic fixture\n"
-                "# yoinkc should flag br_netfilter as explicitly configured\n"
+                "# inspectah should flag br_netfilter as explicitly configured\n"
                 "br_netfilter\n",
             )
             _info(f"{_I.LINUX}  Loading br_netfilter")
             self.run_cmd(["modprobe", "br_netfilter"], check=False)
 
             # modprobe.d options — persistent per-module parameter;
-            # exercises yoinkc's modprobe.d config capture path
+            # exercises inspectah's modprobe.d config capture path
             self._write_managed_text(
                 "/etc/modprobe.d/driftify.conf",
                 "# Module parameters — driftify synthetic fixture\n"
-                "# yoinkc should detect this as a persistent modprobe.d config\n"
+                "# inspectah should detect this as a persistent modprobe.d config\n"
                 "options br_netfilter nf_conntrack_max=131072\n",
             )
 
@@ -2470,7 +2470,7 @@ domain=INTERNAL
                 'compress="gzip"\n',
             )
 
-            # GRUB hardening — add audit=1 at standard profile so yoinkc's
+            # GRUB hardening — add audit=1 at standard profile so inspectah's
             # GRUB defaults detection fires without requiring kitchen-sink
             if not self.needs_profile("kitchen-sink"):
                 self._append_kernel_cmdline_arg("audit=1")
@@ -2894,18 +2894,18 @@ domain=INTERNAL
         )
         self.run_cmd(["dnf", "remove", "-y", "ruby"], check=False)
 
-    def _launch_yoinkc(self) -> None:
-        """Download run-yoinkc.sh from the yoinkc repo and execute it."""
+    def _launch_inspectah(self) -> None:
+        """Download run-inspectah.sh from the inspectah repo and execute it."""
         import urllib.request
         import tempfile
         import stat
 
-        _banner(f"{_I.ROCKET}  Launching yoinkc")
-        _info(f"{_I.DOWNLOAD}  Script: {self._YOINKC_SCRIPT_URL}")
-        _info(f"{_I.DATABASE}  Output: {self.yoinkc_output}")
+        _banner(f"{_I.ROCKET}  Launching inspectah")
+        _info(f"{_I.DOWNLOAD}  Script: {self._INSPECTAH_SCRIPT_URL}")
+        _info(f"{_I.DATABASE}  Output: {self.inspectah_output}")
 
         if self.dry_run:
-            _dry(f"curl {self._YOINKC_SCRIPT_URL} | sh")
+            _dry(f"curl {self._INSPECTAH_SCRIPT_URL} | sh")
             return
 
         script_path = None
@@ -2914,7 +2914,7 @@ domain=INTERNAL
                 suffix=".sh", delete=False, mode="w"
             ) as tf:
                 script_path = tf.name
-            with urllib.request.urlopen(self._YOINKC_SCRIPT_URL, timeout=60) as resp:
+            with urllib.request.urlopen(self._INSPECTAH_SCRIPT_URL, timeout=60) as resp:
                 with open(script_path, "w") as fh:
                     fh.write(resp.read().decode())
             os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
@@ -2930,7 +2930,7 @@ domain=INTERNAL
             )
             captured_lines: list[str] = []
             if proc.stdout is None:
-                _warn("yoinkc subprocess produced no output")
+                _warn("inspectah subprocess produced no output")
                 return
             for line in proc.stdout:
                 print(line, end="", flush=True)
@@ -2939,7 +2939,7 @@ domain=INTERNAL
             captured = "".join(captured_lines)
 
             if proc.returncode != 0:
-                _warn(f"yoinkc failed with exit code {proc.returncode}")
+                _warn(f"inspectah failed with exit code {proc.returncode}")
                 _AUTH_PATTERNS = (
                     "unauthorized",
                     "authentication required",
@@ -2949,18 +2949,18 @@ domain=INTERNAL
                 if any(p in captured.lower() for p in _AUTH_PATTERNS):
                     _warn(
                         "Hint: run 'sudo podman login registry.redhat.io'"
-                        " before using --run-yoinkc on RHEL hosts."
+                        " before using --run-inspectah on RHEL hosts."
                     )
             else:
-                output_path = Path(self.yoinkc_output).resolve()
+                output_path = Path(self.inspectah_output).resolve()
                 parent_path = output_path.parent
                 tarballs = list(parent_path.glob("*.tar.gz"))
                 if tarballs:
                     self._print_next_steps()
                 else:
-                    _warn(f"yoinkc completed but no tarball found in {parent_path}")
+                    _warn(f"inspectah completed but no tarball found in {parent_path}")
         except Exception as exc:
-            _warn(f"Could not launch yoinkc: {exc}")
+            _warn(f"Could not launch inspectah: {exc}")
         finally:
             if script_path:
                 try:
@@ -2969,18 +2969,18 @@ domain=INTERNAL
                     pass
 
     def _print_next_steps(self) -> None:
-        """Print a 'Next steps' block after a successful yoinkc run."""
+        """Print a 'Next steps' block after a successful inspectah run."""
         import socket as _socket
         hostname = _socket.gethostname()
-        output_path = Path(self.yoinkc_output).resolve()
+        output_path = Path(self.inspectah_output).resolve()
         parent_path = output_path.parent
         tarballs = sorted(parent_path.glob("*.tar.gz"), key=lambda p: p.stat().st_mtime)
-        tarball_name = tarballs[-1].name if tarballs else f"yoinkc-output-{hostname}-*.tar.gz"
+        tarball_name = tarballs[-1].name if tarballs else f"inspectah-output-{hostname}-*.tar.gz"
         print()
         _banner(f"{_I.DOWNLOAD}  Next steps")
         _info(f"{_I.ROCKET}  Copy the tarball to your workstation and review:")
         _info(f"             scp {hostname}:{parent_path / tarball_name} .")
-        _info(f"             yoinkc-refine {tarball_name}")
+        _info(f"             inspectah-refine {tarball_name}")
 
     def _print_summary(self) -> None:
         elapsed = time.monotonic() - self._t0
@@ -3162,11 +3162,11 @@ domain=INTERNAL
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
-        if not self.run_yoinkc:
-            _info(f"{_I.ROCKET}  Run yoinkc: sudo ./driftify.py --run-yoinkc")
+        if not self.run_inspectah:
+            _info(f"{_I.ROCKET}  Run inspectah: sudo ./driftify.py --run-inspectah")
             _info(f"             or: curl -fsSL "
-                  f"https://raw.githubusercontent.com/marrusl/yoinkc/main/"
-                  f"run-yoinkc.sh | sudo sh")
+                  f"https://raw.githubusercontent.com/marrusl/inspectah/main/"
+                  f"run-inspectah.sh | sudo sh")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -3228,12 +3228,12 @@ examples:
              "already passes through directly)",
     )
     p.add_argument(
-        "--run-yoinkc", action="store_true",
-        help="after applying drift, download and run run-yoinkc.sh",
+        "--run-inspectah", action="store_true",
+        help="after applying drift, download and run run-inspectah.sh",
     )
     p.add_argument(
-        "--yoinkc-output", default="./yoinkc-output", metavar="DIR",
-        help="output directory for yoinkc artifacts (default: ./yoinkc-output)",
+        "--inspectah-output", default="./inspectah-output", metavar="DIR",
+        help="output directory for inspectah artifacts (default: ./inspectah-output)",
     )
     return p
 
@@ -3317,8 +3317,8 @@ def main() -> None:
         yes=args.yes,
         quiet=args.quiet,
         verbose=args.verbose,
-        run_yoinkc=args.run_yoinkc,
-        yoinkc_output=args.yoinkc_output,
+        run_inspectah=args.run_inspectah,
+        inspectah_output=args.inspectah_output,
     )
 
     if args.undo:
