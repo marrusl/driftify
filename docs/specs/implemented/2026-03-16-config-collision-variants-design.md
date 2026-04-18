@@ -8,7 +8,7 @@
 Driftify profiles create unique config files — no two profiles modify
 the same file path with different content. This means fleet aggregation
 (running all 3 profiles with unique hostnames) never produces
-multi-variant config files. There's no way to test or demo yoinkc's
+multi-variant config files. There's no way to test or demo inspectah's
 variant grouping, comparison, and selection features without manually
 creating collisions.
 
@@ -144,7 +144,7 @@ for each affected drift method.
   config file operations listed
 - Run `./driftify.py --profile kitchen-sink --dry-run` — verify
   kitchen-sink overwrite operations listed after standard ones
-- Run fleet test (`run-fleet-test.sh`) — verify yoinkc-fleet aggregate
+- Run fleet test (`run-fleet-test.sh`) — verify inspectah-fleet aggregate
   produces multi-variant entries for all 5 files
 - Open the fleet HTML report — verify variant grouping shows 2+
   variants for sshd_config, chrony.conf, httpd.conf, database.conf,

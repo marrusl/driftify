@@ -1,10 +1,10 @@
 # driftify
 
-Apply synthetic drift to a fresh RHEL, CentOS Stream, or Fedora system so that [yoinkc](https://github.com/marrusl/yoinkc) has something to detect.
+Apply synthetic drift to a fresh RHEL, CentOS Stream, or Fedora system so that [inspectah](https://github.com/marrusl/inspectah) has something to detect.
 
 ## Why?
 
-driftify creates controlled, reproducible drift for testing yoinkc inspectors without needing access to production infrastructure. It validates the full migration workflow end-to-end: inspect, refine, architect. It also lets you reproduce specific edge cases (SELinux modules, compiled binaries, stacked containers) by toggling profiles and skip flags.
+driftify creates controlled, reproducible drift for testing inspectah inspectors without needing access to production infrastructure. It validates the full migration workflow end-to-end: inspect, refine, architect. It also lets you reproduce specific edge cases (SELinux modules, compiled binaries, stacked containers) by toggling profiles and skip flags.
 
 > **Intended use:** driftify is designed to run on throwaway VMs. It makes significant system-wide changes and provides no cleanup mechanism. Use VM snapshots to restore prior state.
 
@@ -20,20 +20,20 @@ No dependencies beyond Python 3 (ships on every RHEL, CentOS Stream, and Fedora 
 
 ## Complete workflow
 
-driftify is the fixture half of the yoinkc development workflow. Apply drift, then run yoinkc to inspect what changed:
+driftify is the fixture half of the inspectah development workflow. Apply drift, then run inspectah to inspect what changed:
 
 ```bash
 # 1. Apply synthetic drift
 sudo ./driftify.py --profile standard -y
 
-# 2. Run yoinkc to inspect the drifted system
-curl -fsSL https://raw.githubusercontent.com/marrusl/yoinkc/main/run-yoinkc.sh | sudo bash
+# 2. Run inspectah to inspect the drifted system
+curl -fsSL https://raw.githubusercontent.com/marrusl/inspectah/main/run-inspectah.sh | sudo bash
 
 # Or use driftify's built-in handoff:
-sudo ./driftify.py --profile standard -y --run-yoinkc
+sudo ./driftify.py --profile standard -y --run-inspectah
 ```
 
-The `--run-yoinkc` flag downloads and runs `run-yoinkc.sh` immediately after drift is applied, writing artifacts to `--yoinkc-output` (default: `./yoinkc-output`). The output includes an inspection snapshot, HTML report, and Containerfile ready for `yoinkc refine` and `yoinkc architect`.
+The `--run-inspectah` flag downloads and runs `run-inspectah.sh` immediately after drift is applied, writing artifacts to `--inspectah-output` (default: `./inspectah-output`). The output includes an inspection snapshot, HTML report, and Containerfile ready for `inspectah refine` and `inspectah architect`.
 
 ## Usage
 
@@ -45,7 +45,7 @@ sudo ./driftify.py --profile minimal        # CI-friendly, fast
 sudo ./driftify.py --profile kitchen-sink   # everything
 sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
 sudo ./driftify.py --dry-run                # preview without changes
-sudo ./driftify.py --run-yoinkc             # apply drift then run yoinkc
+sudo ./driftify.py --run-inspectah             # apply drift then run inspectah
 sudo ./driftify.py --undo                   # reverse a previous driftify run
 sudo ./driftify.py --undo-first             # reverse previous run, then apply drift
 ```
@@ -64,8 +64,8 @@ sudo ./driftify.py --undo-first             # reverse previous run, then apply d
 | `-y`, `--yes` | Skip interactive confirmation prompt |
 | `-q`, `--quiet` | Show only section banners, warnings, and errors |
 | `--verbose` | Reserved for future use |
-| `--run-yoinkc` | After applying drift, download and run `run-yoinkc.sh` |
-| `--yoinkc-output DIR` | Output directory for yoinkc artifacts (default: `./yoinkc-output`) |
+| `--run-inspectah` | After applying drift, download and run `run-inspectah.sh` |
+| `--inspectah-output DIR` | Output directory for inspectah artifacts (default: `./inspectah-output`) |
 
 #### Sections
 
@@ -75,7 +75,7 @@ Each `--skip-SECTION` flag controls one drift category:
 
 ### `topology` subcommand
 
-Generate fleet topology fixture directories for testing `yoinkc architect`.
+Generate fleet topology fixture directories for testing `inspectah architect`.
 
 ```bash
 ./driftify.py topology --list                              # list available topologies
@@ -93,15 +93,15 @@ Generate fleet topology fixture directories for testing `yoinkc architect`.
 
 | Profile | What it does | Time |
 |---------|-------------|------|
-| **minimal** | Just enough to light up every yoinkc inspector with at least one finding. No heavy downloads. Good for CI. | ~1-2 min |
+| **minimal** | Just enough to light up every inspectah inspector with at least one finding. No heavy downloads. Good for CI. | ~1-2 min |
 | **standard** | A realistic "moderately customized app server." Multiple findings per inspector, enough for a compelling demo. | ~2-4 min |
-| **kitchen-sink** | Everything: dev tools, compiled binaries, complex configs, edge cases. Exercises yoinkc's deep-scan paths. | ~5-10 min |
+| **kitchen-sink** | Everything: dev tools, compiled binaries, complex configs, edge cases. Exercises inspectah's deep-scan paths. | ~5-10 min |
 
 Profiles are cumulative: `standard` includes everything in `minimal`, and `kitchen-sink` includes everything in `standard`.
 
 ## Coverage map
 
-| Section | yoinkc inspector | What driftify plants |
+| Section | inspectah inspector | What driftify plants |
 |---------|-----------------|---------------------|
 | rpm | Package inspector | Repo setup, base + extra-repo packages, ghost packages |
 | services | Service inspector | Enabled/disabled/masked services, drop-in overrides |
@@ -128,13 +128,13 @@ For per-profile breakdowns of each section, see [docs/coverage-detail.md](docs/c
 - **Run record** -- writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps.
 - **OS auto-detection** -- reads `/etc/os-release` to adapt for EL9, EL10, and Fedora.
 - **Idempotent** -- safe to run twice without breaking the system.
-- **Fake secrets** -- plants realistic-looking but obviously synthetic credentials to exercise yoinkc's redaction.
+- **Fake secrets** -- plants realistic-looking but obviously synthetic credentials to exercise inspectah's redaction.
 - **Human-readable output** -- colored section banners with step counters. Degrades to plain text when stdout is not a TTY.
-- **yoinkc handoff** -- `--run-yoinkc` downloads and runs `run-yoinkc.sh` immediately after drift is applied.
+- **inspectah handoff** -- `--run-inspectah` downloads and runs `run-inspectah.sh` immediately after drift is applied.
 
 ## Fleet testing
 
-`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs yoinkc after each with a unique hostname, then aggregates the results into a fleet tarball.
+`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs inspectah after each with a unique hostname, then aggregates the results into a fleet tarball.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/main/run-fleet-test.sh -o run-fleet-test.sh
@@ -143,15 +143,15 @@ sudo bash run-fleet-test.sh
 
 Since profiles are cumulative (minimal < standard < kitchen-sink), each successive tarball captures more drift. The fleet aggregation with `-p 67` naturally stratifies: minimal items appear on 3/3 hosts, standard-only on 2/3, kitchen-sink-only on 1/3.
 
-The output is a fleet tarball with Containerfile, HTML report (with prevalence badges), and merged snapshot -- ready to open in a browser or pass to `yoinkc refine`.
+The output is a fleet tarball with Containerfile, HTML report (with prevalence badges), and merged snapshot -- ready to open in a browser or pass to `inspectah refine`.
 
-Use driftify's multi-fleet topology fixtures to test `yoinkc architect` layer decomposition:
+Use driftify's multi-fleet topology fixtures to test `inspectah architect` layer decomposition:
 
 ```bash
 ./driftify.py topology three-role-overlap /tmp/fixtures/
 ```
 
-Each topology generates fleet-ready tarballs containing merged inspection snapshots with controlled inter-fleet variance, designed to exercise `yoinkc architect`'s base/derived layer decomposition.
+Each topology generates fleet-ready tarballs containing merged inspection snapshots with controlled inter-fleet variance, designed to exercise `inspectah architect`'s base/derived layer decomposition.
 
 ## Requirements
 
@@ -177,5 +177,5 @@ make test
 
 ## See also
 
-- [yoinkc](https://github.com/marrusl/yoinkc) -- the inspection, refinement, and architect tool that driftify is built to exercise
-- [yoinkc container image](https://github.com/marrusl/yoinkc/pkgs/container/yoinkc) -- pre-built container for running yoinkc without local setup
+- [inspectah](https://github.com/marrusl/inspectah) -- the inspection, refinement, and architect tool that driftify is built to exercise
+- [inspectah container image](https://github.com/marrusl/inspectah/pkgs/container/inspectah) -- pre-built container for running inspectah without local setup

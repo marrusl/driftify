@@ -184,5 +184,5 @@ Returns quietly if file doesn't exist or marker not found.
   runs then drift re-applies
 - `run-fleet-test.sh` twice on same VM — verify second run produces
   clean results
-- Spot check: after undo + re-drift, run yoinkc and verify report
+- Spot check: after undo + re-drift, run inspectah and verify report
   looks consistent (no duplicate entries or residual ghost items)

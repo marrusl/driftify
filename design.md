@@ -2,23 +2,23 @@
 
 ## Purpose
 
-driftify is a companion tool to yoinkc. It runs on a fresh RHEL, CentOS Stream (9.x or 10.x), or Fedora install and applies a curated set of system modifications that exercise every yoinkc inspector. This serves three goals:
+driftify is a companion tool to inspectah. It runs on a fresh RHEL, CentOS Stream (9.x or 10.x), or Fedora install and applies a curated set of system modifications that exercise every inspectah inspector. This serves three goals:
 
-1. **Demo environments.** Run driftify, then run yoinkc, and you get a compelling demonstration with real findings across every category — packages, configs, services, containers, non-RPM software, secrets, the works.
-2. **Development testing.** Every yoinkc code path that detects something needs a system where that something exists. driftify is the fixture. When you add a new detection capability to yoinkc, you add a corresponding drift to driftify.
-3. **Regression testing.** Run driftify → yoinkc → validate output. If yoinkc stops detecting something driftify creates, that's a bug.
+1. **Demo environments.** Run driftify, then run inspectah, and you get a compelling demonstration with real findings across every category — packages, configs, services, containers, non-RPM software, secrets, the works.
+2. **Development testing.** Every inspectah code path that detects something needs a system where that something exists. driftify is the fixture. When you add a new detection capability to inspectah, you add a corresponding drift to driftify.
+3. **Regression testing.** Run driftify → inspectah → validate output. If inspectah stops detecting something driftify creates, that's a bug.
 
 ## Design Principles
 
-**Explicit coverage mapping.** Every modification driftify makes is tagged with the yoinkc inspector(s) it exercises. This isn't a random junk drawer — it's a structured test fixture.
+**Explicit coverage mapping.** Every modification driftify makes is tagged with the inspectah inspector(s) it exercises. This isn't a random junk drawer — it's a structured test fixture.
 
 **Profiles for different contexts.** A quick CI run doesn't need 200MB of Go binaries. A live demo wants enough to be impressive but not so much that it takes 20 minutes to apply. A full stress test wants everything, including the ugly edge cases.
 
 **Idempotent enough.** Running driftify twice shouldn't break the system. It won't be perfectly idempotent (you can't `dnf install` an already-installed package without it being a no-op, which is fine), but it shouldn't fail or produce a worse state on re-run. Kernel argument appending is fully idempotent — it checks existing `GRUB_CMDLINE_LINUX` args before appending, so re-runs don't duplicate values. `useradd`/`groupadd` failures are handled gracefully: if a user already exists or creation fails, dependent operations (SSH key writes, chown, sudoers) are skipped rather than silently corrupted.
 
-**No real secrets.** driftify plants fake secrets that look realistic enough to trigger yoinkc's redaction patterns, but they're obviously synthetic. Nobody should be able to accidentally leak a real credential from a driftify-prepared system.
+**No real secrets.** driftify plants fake secrets that look realistic enough to trigger inspectah's redaction patterns, but they're obviously synthetic. Nobody should be able to accidentally leak a real credential from a driftify-prepared system.
 
-**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise yoinkc. System state is restored via VM snapshots, not an undo mechanism. There is no `--undo` flag.
+**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise inspectah. System state is restored via VM snapshots, not an undo mechanism. There is no `--undo` flag.
 
 **Fast by default.** The standard profile should complete in under 3 minutes on a system with decent network. Expensive operations (compiling binaries, pulling large images) are opt-in via the `kitchen-sink` profile.
 
@@ -66,7 +66,7 @@ It sources a config file (`driftify.conf`) if present, but works entirely with b
 
 ### `minimal`
 
-Just enough to light up every yoinkc inspector card with at least one finding. Optimized for speed — no network-heavy operations beyond basic `dnf install`. Suitable for CI.
+Just enough to light up every inspectah inspector card with at least one finding. Optimized for speed — no network-heavy operations beyond basic `dnf install`. Suitable for CI.
 
 Approximate time: **1–2 minutes.**
 
@@ -78,17 +78,17 @@ Approximate time: **2–4 minutes.**
 
 ### `kitchen-sink`
 
-Everything. Multiple packages from every category, complex configs, edge cases, non-RPM software with various provenance levels (pip with C extensions, npm with lockfiles, mystery binaries). Exercises yoinkc's deep-scan and edge-case handling.
+Everything. Multiple packages from every category, complex configs, edge cases, non-RPM software with various provenance levels (pip with C extensions, npm with lockfiles, mystery binaries). Exercises inspectah's deep-scan and edge-case handling.
 
 Approximate time: **5–10 minutes** (depends on network speed and whether Go/Rust binaries are downloaded or compiled).
 
 ## Coverage Map
 
-This is the core of the design. Each section maps to a yoinkc inspector and specifies exactly what driftify creates to exercise it.
+This is the core of the design. Each section maps to a inspectah inspector and specifies exactly what driftify creates to exercise it.
 
 ### RPM Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Enable EPEL repo (EL) or RPM Fusion Free (Fedora) | Additional repo beyond base | minimal |
 | `dnf install` ~10 base-repo packages (httpd, nginx, vim-enhanced, tmux, jq, etc.) | Added packages vs. base image | minimal |
@@ -104,7 +104,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 ### Service Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | `systemctl enable httpd` | Non-default enabled service | minimal |
 | `systemctl enable nginx` | Second non-default enabled service | minimal |
@@ -118,7 +118,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 #### Modified RPM-owned configs
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Modify `/etc/httpd/conf/httpd.conf` — change `Listen`, `ServerName`, `MaxRequestWorkers` | Modified RPM-owned config (triggers `rpm -Va`) | minimal |
 | Modify `/etc/nginx/nginx.conf` — change `worker_processes`, add `server` block | Modified RPM-owned config | minimal |
@@ -129,7 +129,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 #### Unowned config files (not from any RPM)
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Drop `/etc/myapp/app.conf` with application config | Unowned config file in /etc | minimal |
 | Drop `/etc/myapp/database.yml` with DB connection (fake creds) | Unowned config + secret detection | minimal |
@@ -140,13 +140,13 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 #### Orphaned configs from removed packages
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Install `words`, modify its config, then remove the package | Config file orphaned by removed package | standard |
 
 ### Network Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Add firewalld service allowances (http, https, 8080/tcp) | Non-default firewall rules | minimal |
 | Add custom firewalld zone XML | Custom zone definition | standard |
@@ -158,7 +158,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 ### Storage Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Add NFS entry to `/etc/fstab` (non-functional — uses `noauto`) | NFS mount dependency in fstab | standard |
 | Add CIFS entry to `/etc/fstab` (non-functional — uses `noauto`) | CIFS mount with credential reference | standard |
@@ -167,7 +167,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 ### Scheduled Task Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Add cron job to `/etc/cron.d/backup-daily` | Cron job → timer conversion | minimal |
 | Add script to `/etc/cron.daily/cleanup.sh` | Cron daily script | minimal |
@@ -178,7 +178,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 
 ### Container Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Drop a `.container` quadlet unit in `/etc/containers/systemd/` | Quadlet unit with `Image=` parsing | minimal |
 | Drop a `.container` quadlet with volumes, ports, env vars, and secrets | Richer quadlet detection — multiple parsed fields | standard |
@@ -187,11 +187,11 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Drop a `docker-compose.yml` in `/opt/myapp/` | Compose file detection + FIXME for conversion | standard |
 | Drop a user-level quadlet in `~appuser/.config/containers/systemd/` | User-level quadlet detection | kitchen-sink |
 
-None of these actually pull or run container images. yoinkc's file-based scanner only needs the unit files on disk. The `--query-podman` flag would find nothing, which is itself a valid test case (no running containers, but quadlet definitions exist).
+None of these actually pull or run container images. inspectah's file-based scanner only needs the unit files on disk. The `--query-podman` flag would find nothing, which is itself a valid test case (no running containers, but quadlet definitions exist).
 
 **Quadlet unit details:**
 
-The quadlet files are designed to exercise the specific fields yoinkc's container inspector parses:
+The quadlet files are designed to exercise the specific fields inspectah's container inspector parses:
 
 **`/etc/containers/systemd/webapp.container`** (minimal):
 ```ini
@@ -205,7 +205,7 @@ PublishPort=8080:8080
 PublishPort=8443:8443
 Environment=APP_ENV=production
 Environment=LOG_LEVEL=info
-# This fake secret should trigger yoinkc's redaction
+# This fake secret should trigger inspectah's redaction
 Environment=DATABASE_URL=postgresql://dbuser:s3cret@db.internal:5432/myapp
 Volume=/var/lib/myapp/data:/app/data:Z
 Volume=/var/log/myapp:/app/logs:Z
@@ -284,7 +284,7 @@ volumes:
   pgdata:
 ```
 
-This exercises: compose file detection in `/opt`, multi-service `image:` extraction, secret in environment, volume definitions, `depends_on` relationships. yoinkc should flag this with a `# FIXME: converted from docker-compose, verify quadlet translation` comment.
+This exercises: compose file detection in `/opt`, multi-service `image:` extraction, secret in environment, volume definitions, `depends_on` relationships. inspectah should flag this with a `# FIXME: converted from docker-compose, verify quadlet translation` comment.
 
 **`~appuser/.config/containers/systemd/dev-tools.container`** (kitchen-sink):
 ```ini
@@ -305,7 +305,7 @@ This exercises: user-level quadlet detection (UID 1000–59999 path scan), `%h` 
 
 This is the most involved section because it needs to exercise multiple detection strategies.
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Create a Python venv at `/opt/myapp/venv` with pip packages (flask, gunicorn, requests) | pip venv detection, package list capture | minimal |
 | Install a small npm project at `/opt/webapp/` with `package.json` and `node_modules` | npm project detection, lockfile capture | standard |
@@ -319,7 +319,7 @@ This is the most involved section because it needs to exercise multiple detectio
 
 **Binary provisioning:**
 
-The Go and mystery binaries need to exist as real ELF files for yoinkc's `readelf` / `file` detection to work. Options:
+The Go and mystery binaries need to exist as real ELF files for inspectah's `readelf` / `file` detection to work. Options:
 
 1. **Compile at driftify time** (kitchen-sink only): Install Go toolchain, compile a trivial `main.go`. Produces a genuine Go binary with build ID. Slow (~30s) and requires Go.
 2. **Download pre-built binaries** (standard/minimal): Download small, well-known Go binaries from GitHub releases. Candidates: `yq` (~10MB, Go, has version string), `gojq` (~5MB, Go). These are real tools, small, and available on GitHub releases as static binaries.
@@ -329,7 +329,7 @@ Recommendation: option 2 for standard/minimal (download `yq` — it's broadly us
 
 ### Kernel/Boot Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Add sysctl overrides in `/etc/sysctl.d/99-driftify.conf` | Non-default sysctl values with source attribution | minimal |
 | Apply sysctls live (`sysctl -p`) so runtime matches | Runtime vs. shipped default diff | minimal |
@@ -341,7 +341,7 @@ Recommendation: option 2 for standard/minimal (download `yq` — it's broadly us
 
 ```ini
 # /etc/sysctl.d/99-driftify.conf
-# Network performance tuning (exercises yoinkc sysctl detection)
+# Network performance tuning (exercises inspectah sysctl detection)
 net.core.somaxconn = 4096
 net.ipv4.tcp_max_syn_backlog = 8192
 net.ipv4.ip_local_port_range = 1024 65535
@@ -356,7 +356,7 @@ These are all common production tuning values, safe to apply, and clearly non-de
 
 ```ini
 # /etc/modules-load.d/driftify.conf
-# Exercise yoinkc kernel module detection
+# Exercise inspectah kernel module detection
 br_netfilter
 ```
 
@@ -364,7 +364,7 @@ br_netfilter
 
 ### SELinux/Security Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | `setsebool -P httpd_can_network_connect on` | Non-default SELinux boolean | minimal |
 | `setsebool -P httpd_can_network_relay on` | Second non-default boolean | standard |
@@ -392,7 +392,7 @@ This is a no-op (httpd_can_network_connect already grants this when enabled) but
 
 ### User/Group Inspector
 
-| What driftify does | What yoinkc should detect | Profile |
+| What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Create user `appuser` (UID 1001) with home dir | Non-system user in 1000–59999 range | minimal |
 | Create user `dbuser` (UID 1002) with `/sbin/nologin` shell | Service account pattern | standard |
@@ -404,7 +404,7 @@ This is a no-op (httpd_can_network_connect already grants this when enabled) but
 
 ### Secret Handling
 
-These are *fake* secrets that are designed to trigger yoinkc's redaction patterns. They should look realistic enough to validate the pattern matching but be obviously synthetic on inspection.
+These are *fake* secrets that are designed to trigger inspectah's redaction patterns. They should look realistic enough to validate the pattern matching but be obviously synthetic on inspection.
 
 | What driftify plants | Where | Pattern triggered | Profile |
 |---|---|---|---|
@@ -494,10 +494,10 @@ Options:
   --dry-run            Print what would be done without doing it
   -y, --yes            Skip interactive confirmation prompt
   -q, --quiet          Show only section banners, warnings, and errors.
-                       Does not suppress yoinkc output when --run-yoinkc is used.
+                       Does not suppress inspectah output when --run-inspectah is used.
   --verbose            Reserved for future use (no effect today)
-  --run-yoinkc         After applying drift, download and run run-yoinkc.sh
-  --yoinkc-output DIR  Output directory for yoinkc artifacts (default: ./yoinkc-output)
+  --run-inspectah         After applying drift, download and run run-inspectah.sh
+  --inspectah-output DIR  Output directory for inspectah artifacts (default: ./inspectah-output)
   --help               Show this help
 
 Examples:
@@ -505,18 +505,18 @@ Examples:
   sudo ./driftify.py --profile minimal        # CI-friendly, fast
   sudo ./driftify.py --profile kitchen-sink   # Everything
   sudo ./driftify.py --skip-nonrpm            # Standard, but skip non-RPM software
-  sudo ./driftify.py --run-yoinkc             # Apply drift then hand off to yoinkc
+  sudo ./driftify.py --run-inspectah             # Apply drift then hand off to inspectah
 ```
 
 ## Fleet Testing
 
-`run-fleet-test.sh` automates the full fleet test loop on a single VM. It is fully self-contained — it curls `driftify.py`, `run-yoinkc.sh`, and `run-yoinkc-fleet.sh` from GitHub so no local checkout is required.
+`run-fleet-test.sh` automates the full fleet test loop on a single VM. It is fully self-contained — it curls `driftify.py`, `run-inspectah.sh`, and `run-inspectah-fleet.sh` from GitHub so no local checkout is required.
 
 **What it does:**
 
 1. Runs driftify with all three profiles in sequence (minimal, standard, kitchen-sink).
-2. After each profile, runs yoinkc with a unique `YOINKC_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
-3. Aggregates the three host tarballs into a fleet tarball using `run-yoinkc-fleet.sh` with `-p 67` (67% prevalence threshold).
+2. After each profile, runs inspectah with a unique `INSPECTAH_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
+3. Aggregates the three host tarballs into a fleet tarball using `run-inspectah-fleet.sh` with `-p 67` (67% prevalence threshold).
 
 **Usage:**
 
@@ -553,22 +553,22 @@ Users/Groups:         2 users, 1 group, 1 sudoers rule, 1 SSH key
 Secrets:              6 fake credentials planted
 
 Stamp file: /etc/driftify.stamp
-Run yoinkc: sudo ./driftify.py --run-yoinkc
+Run inspectah: sudo ./driftify.py --run-inspectah
 ```
 
-This summary directly maps to what yoinkc should find. During development, you can compare driftify's summary against yoinkc's audit report to verify full coverage.
+This summary directly maps to what inspectah should find. During development, you can compare driftify's summary against inspectah's audit report to verify full coverage.
 
 ## Non-Goals
 
-**driftify does not test yoinkc's rendering.** It tests detection. Whether the Containerfile or HTML report renders correctly is a separate concern — driftify just ensures there's something to detect and render.
+**driftify does not test inspectah's rendering.** It tests detection. Whether the Containerfile or HTML report renders correctly is a separate concern — driftify just ensures there's something to detect and render.
 
 **driftify does not create a "realistic production system."** It creates a system with realistic *types* of drift, but the specific combination (httpd AND nginx AND a Flask app AND Go binaries) is unlikely on any single real server. That's fine — the goal is coverage, not realism.
 
-**driftify does not test yoinkc's baseline generation.** Baseline generation requires pulling a bootc base image via podman, which is infrastructure-dependent. driftify focuses on what's on the host filesystem. Baseline testing belongs in yoinkc's own test suite.
+**driftify does not test inspectah's baseline generation.** Baseline generation requires pulling a bootc base image via podman, which is infrastructure-dependent. driftify focuses on what's on the host filesystem. Baseline testing belongs in inspectah's own test suite.
 
-**driftify does not test version-specific edge cases exhaustively.** It works on both RHEL/CentOS 9 and 10 by adapting to the detected version, but it doesn't maintain separate coverage maps per version. If a yoinkc detection path is version-specific, that should be tested in yoinkc's own test suite with version-pinned fixtures.
+**driftify does not test version-specific edge cases exhaustively.** It works on both RHEL/CentOS 9 and 10 by adapting to the detected version, but it doesn't maintain separate coverage maps per version. If a inspectah detection path is version-specific, that should be tested in inspectah's own test suite with version-pinned fixtures.
 
-**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `yoinkc-fleet`. See the Fleet Testing section below.
+**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `inspectah-fleet`. See the Fleet Testing section below.
 
 ## Dependencies
 
@@ -677,7 +677,7 @@ Modules: br_netfilter loaded (standard+)
 
 ## Future Work
 
-**CI integration.** A GitHub Actions workflow that provisions CentOS Stream 9, CentOS Stream 10, and Fedora VMs, runs driftify, runs yoinkc, and validates the output contains expected findings. This is the regression test harness. Matrix testing across OS versions ensures neither tool silently breaks on a version it claims to support.
+**CI integration.** A GitHub Actions workflow that provisions CentOS Stream 9, CentOS Stream 10, and Fedora VMs, runs driftify, runs inspectah, and validates the output contains expected findings. This is the regression test harness. Matrix testing across OS versions ensures neither tool silently breaks on a version it claims to support.
 
 **Parameterized scenarios.** Config file support for defining specific drift scenarios: "I want a system that looks like a web server" vs. "I want a system that looks like a database server" vs. "I want a system that looks like a Kubernetes node." Each scenario would select different packages, configs, and services.
 

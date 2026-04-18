@@ -5,7 +5,7 @@
 
 ## Problem
 
-yoinkc has added several inspection categories that driftify doesn't create examples for. Operators testing with driftify profiles won't see these categories populated in reports, so they can't verify the rendering or triage workflow for those items.
+inspectah has added several inspection categories that driftify doesn't create examples for. Operators testing with driftify profiles won't see these categories populated in reports, so they can't verify the rendering or triage workflow for those items.
 
 ## Gaps (9 items)
 
@@ -123,13 +123,13 @@ Item 4 (nsswitch.conf) is a good candidate for cross-profile variants for fleet 
 
 ## Out of Scope
 
-- PAM custom modules (deferred in yoinkc gap audit)
+- PAM custom modules (deferred in inspectah gap audit)
 - NIC naming risk detection (deferred — P1)
 - sshd_config parse (deferred — P1)
-- New yoinkc inspectors — this spec only adds driftify fixtures for existing inspectors
+- New inspectah inspectors — this spec only adds driftify fixtures for existing inspectors
 
 ## Testing
 
-- Run each profile individually and verify yoinkc reports show the new categories populated
+- Run each profile individually and verify inspectah reports show the new categories populated
 - Run fleet test (`run-fleet-test.sh`) and verify aggregation handles the new items
 - Verify undo reverses each change cleanly
