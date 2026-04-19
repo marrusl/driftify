@@ -4,7 +4,7 @@ Apply synthetic drift to a fresh RHEL, CentOS Stream, or Fedora system so that [
 
 ## Why?
 
-driftify creates controlled, reproducible drift for testing inspectah inspectors without needing access to production infrastructure. It validates the full migration workflow end-to-end: inspect, refine, architect. It also lets you reproduce specific edge cases (SELinux modules, compiled binaries, stacked containers) by toggling profiles and skip flags.
+driftify creates controlled, reproducible drift for testing inspectah inspectors without needing access to production infrastructure. It validates the full migration workflow end-to-end: scan, refine, architect. It also lets you reproduce specific edge cases (SELinux modules, compiled binaries, stacked containers) by toggling profiles and skip flags.
 
 > **Intended use:** driftify is designed to run on throwaway VMs. It makes significant system-wide changes and provides no cleanup mechanism. Use VM snapshots to restore prior state.
 
