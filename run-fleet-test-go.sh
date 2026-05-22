@@ -14,11 +14,19 @@ fi
 PROFILES=(minimal standard kitchen-sink)
 HOSTNAMES=(web-01 web-02 web-03)
 
-DRIFTIFY_SCRIPT="$(mktemp)"
 FLEET_DIR="$(mktemp -d -t fleet-aggregate.XXXXXX)"
-curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/refs/heads/main/driftify.py -o "$DRIFTIFY_SCRIPT"
-chmod +x "$DRIFTIFY_SCRIPT"
-trap 'rm -f "$DRIFTIFY_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
+
+# Use local driftify.py if present, otherwise fetch from GitHub.
+if [[ -f "$(pwd)/driftify.py" ]]; then
+    DRIFTIFY_SCRIPT="$(pwd)/driftify.py"
+    DRIFTIFY_FETCHED=false
+else
+    DRIFTIFY_SCRIPT="$(mktemp)"
+    DRIFTIFY_FETCHED=true
+    curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/refs/heads/main/driftify.py -o "$DRIFTIFY_SCRIPT"
+    chmod +x "$DRIFTIFY_SCRIPT"
+fi
+trap '$DRIFTIFY_FETCHED && rm -f "$DRIFTIFY_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
 # Start from a clean slate (undo any previous driftify run)
 echo "=== Undoing previous driftify state ==="
