@@ -134,25 +134,14 @@ For per-profile breakdowns of each section, see [docs/coverage-detail.md](docs/c
 
 ## Fleet testing
 
-### Python implementation
-
-`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs inspectah after each with a unique hostname, then aggregates the results into a fleet tarball.
+`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs inspectah after each with a unique hostname, then aggregates the results into a fleet tarball. It prefers an `inspectah` binary in the current directory; otherwise it uses the one in `$PATH`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/main/run-fleet-test.sh -o run-fleet-test.sh
 sudo bash run-fleet-test.sh
 ```
 
-### Rust implementation
-
-`run-fleet-test-rust.sh` runs the same fleet test loop using the inspectah Rust binary. Requires the Rust `inspectah` binary in the current working directory before running.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/main/run-fleet-test-rust.sh -o run-fleet-test-rust.sh
-sudo bash run-fleet-test-rust.sh
-```
-
-Since profiles are cumulative (minimal < standard < kitchen-sink), each successive tarball captures more drift. The fleet aggregation with `-p 67` naturally stratifies: minimal items appear on 3/3 hosts, standard-only on 2/3, kitchen-sink-only on 1/3.
+Since profiles are cumulative (minimal < standard < kitchen-sink), each successive tarball captures more drift. The fleet aggregation naturally stratifies: minimal items appear on 3/3 hosts, standard-only on 2/3, kitchen-sink-only on 1/3.
 
 The output is a fleet tarball with Containerfile, HTML report (with prevalence badges), and merged snapshot -- ready to open in a browser or pass to `inspectah refine`.
 
