@@ -34,8 +34,11 @@ fi
 trap 'sudo hostnamectl set-hostname "$ORIGINAL_HOSTNAME" 2>/dev/null; $DRIFTIFY_FETCHED && rm -f "$DRIFTIFY_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
 # Start from a clean slate (undo any previous driftify run)
-echo "=== Undoing previous driftify state ==="
-sudo "$DRIFTIFY_SCRIPT" --undo -yq
+# Pass --no-undo to skip this step on fresh VMs.
+if [[ "${1:-}" != "--no-undo" ]]; then
+    echo "=== Undoing previous driftify state ==="
+    sudo "$DRIFTIFY_SCRIPT" --undo -yq
+fi
 
 for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"
