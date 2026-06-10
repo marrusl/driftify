@@ -1,18 +1,37 @@
 #!/usr/bin/env bash
-# Run all driftify profiles, inspectah each, produce fleet-ready tarballs.
-# Self-contained: fetches all scripts from GitHub; no local checkout required.
+# Run all driftify profiles against the inspectah Rust binary, produce fleet tarball.
+# Prefers ./inspectah in the current directory; falls back to inspectah in $PATH.
+# Self-contained: fetches driftify from GitHub; no local checkout required.
 set -euo pipefail
+
+# Prefer a local binary in cwd; fall back to $PATH.
+if [[ -x "./inspectah" ]]; then
+    INSPECTAH="$(pwd)/inspectah"
+elif command -v inspectah &>/dev/null; then
+    INSPECTAH="$(command -v inspectah)"
+else
+    echo "Error: inspectah binary not found in current directory or \$PATH." >&2
+    exit 1
+fi
+echo "Using: $INSPECTAH"
 
 PROFILES=(minimal standard kitchen-sink)
 HOSTNAMES=(web-01 web-02 web-03)
 
-DRIFTIFY_SCRIPT="$(mktemp)"
-INSPECTAH_SCRIPT="$(mktemp)"
 FLEET_DIR="$(mktemp -d -t fleet-aggregate.XXXXXX)"
-curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/refs/heads/main/driftify.py -o "$DRIFTIFY_SCRIPT"
-curl -fsSL https://raw.githubusercontent.com/marrusl/inspectah/refs/heads/main/run-inspectah.sh -o "$INSPECTAH_SCRIPT"
-chmod +x "$DRIFTIFY_SCRIPT" "$INSPECTAH_SCRIPT"
-trap 'rm -f "$DRIFTIFY_SCRIPT" "$INSPECTAH_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
+ORIGINAL_HOSTNAME="$(hostname)"
+
+# Use local driftify.py if present, otherwise fetch from GitHub.
+if [[ -f "$(pwd)/driftify.py" ]]; then
+    DRIFTIFY_SCRIPT="$(pwd)/driftify.py"
+    DRIFTIFY_FETCHED=false
+else
+    DRIFTIFY_SCRIPT="$(mktemp)"
+    DRIFTIFY_FETCHED=true
+    curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/refs/heads/main/driftify.py -o "$DRIFTIFY_SCRIPT"
+    chmod +x "$DRIFTIFY_SCRIPT"
+fi
+trap 'sudo hostnamectl set-hostname "$ORIGINAL_HOSTNAME" 2>/dev/null; $DRIFTIFY_FETCHED && rm -f "$DRIFTIFY_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
 # Start from a clean slate (undo any previous driftify run)
 echo "=== Undoing previous driftify state ==="
@@ -23,14 +42,22 @@ for i in "${!PROFILES[@]}"; do
     hostname="${HOSTNAMES[$i]}"
     echo "=== Profile: $profile (hostname: $hostname) ==="
     sudo "$DRIFTIFY_SCRIPT" -yq --profile "$profile"
-    INSPECTAH_HOSTNAME="$hostname" bash "$INSPECTAH_SCRIPT"
+    # Rust binary reads hostname from the system (no INSPECTAH_HOSTNAME env var),
+    # so we set it directly before each scan and restore it on exit via the trap.
+    sudo hostnamectl set-hostname "$hostname"
+    sudo "$INSPECTAH" scan
 done
+
+# Restore hostname before aggregation (not strictly needed, but tidy)
+sudo hostnamectl set-hostname "$ORIGINAL_HOSTNAME"
 
 echo ""
 echo "=== Aggregating fleet ==="
+# Rust fleet uses: inspectah fleet aggregate <inputs...>
+# Collect the 3 most recent tarballs into the staging directory.
 # shellcheck disable=SC2012
 ls -1t *.tar.gz | head -3 | xargs -I{} cp {} "$FLEET_DIR/"
-bash "$INSPECTAH_SCRIPT" fleet "$FLEET_DIR" -p 66
+"$INSPECTAH" fleet aggregate "$FLEET_DIR"
 
 echo ""
 echo "=== Fleet tarball ==="
