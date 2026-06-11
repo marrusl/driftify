@@ -23,10 +23,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCAN_FLAGS=()
+AGGREGATE_FLAGS=()
 if $NO_REDACTION; then
     SCAN_FLAGS+=(--no-redaction --ack-sensitive)
+    AGGREGATE_FLAGS+=(--ack-sensitive)
 elif [[ -n "$PRESERVE" ]]; then
     SCAN_FLAGS+=(--preserve "$PRESERVE" --ack-sensitive)
+    AGGREGATE_FLAGS+=(--ack-sensitive)
 fi
 
 # Prefer a local binary in cwd; fall back to $PATH.
@@ -84,7 +87,7 @@ echo "=== Aggregating fleet ==="
 # Collect the 3 most recent tarballs into the staging directory.
 # shellcheck disable=SC2012
 ls -1t *.tar.gz | head -3 | xargs -I{} cp {} "$FLEET_DIR/"
-"$INSPECTAH" fleet aggregate "$FLEET_DIR"
+"$INSPECTAH" fleet aggregate "${AGGREGATE_FLAGS[@]}" "$FLEET_DIR"
 
 echo ""
 echo "=== Fleet tarball ==="
