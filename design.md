@@ -18,7 +18,7 @@ driftify is a companion tool to inspectah. It runs on a fresh RHEL, CentOS Strea
 
 **No real secrets.** driftify plants fake secrets that look realistic enough to trigger inspectah's redaction patterns, but they're obviously synthetic. Nobody should be able to accidentally leak a real credential from a driftify-prepared system.
 
-**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise inspectah. System state is restored via VM snapshots, not an undo mechanism. There is no `--undo` flag.
+**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise inspectah. System state can be restored via VM snapshots or driftify's `--undo` / `--undo-first` flags, which reverse a previous run.
 
 **Fast by default.** The standard profile should complete in under 3 minutes on a system with decent network. Expensive operations (compiling binaries, pulling large images) are opt-in via the `kitchen-sink` profile.
 
@@ -496,7 +496,7 @@ Options:
   -q, --quiet          Show only section banners, warnings, and errors.
                        Does not suppress inspectah output when --run-inspectah is used.
   --verbose            Reserved for future use (no effect today)
-  --run-inspectah         After applying drift, download and run run-inspectah.sh
+  --run-inspectah         After applying drift, run 'inspectah scan' to inspect the system
   --inspectah-output DIR  Output directory for inspectah artifacts (default: ./inspectah-output)
   --help               Show this help
 
@@ -505,18 +505,18 @@ Examples:
   sudo ./driftify.py --profile minimal        # CI-friendly, fast
   sudo ./driftify.py --profile kitchen-sink   # Everything
   sudo ./driftify.py --skip-nonrpm            # Standard, but skip non-RPM software
-  sudo ./driftify.py --run-inspectah             # Apply drift then hand off to inspectah
+  sudo ./driftify.py --run-inspectah             # Apply drift then run inspectah scan
 ```
 
 ## Fleet Testing
 
-`run-fleet-test.sh` automates the full fleet test loop on a single VM. It is fully self-contained — it curls `driftify.py`, `run-inspectah.sh`, and `run-inspectah-fleet.sh` from GitHub so no local checkout is required.
+`run-fleet-test.sh` automates the full fleet test loop on a single VM. It prefers an `inspectah` binary in the current directory; otherwise it uses the one in `$PATH`.
 
 **What it does:**
 
 1. Runs driftify with all three profiles in sequence (minimal, standard, kitchen-sink).
-2. After each profile, runs inspectah with a unique `INSPECTAH_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
-3. Aggregates the three host tarballs into a fleet tarball using `run-inspectah-fleet.sh` with `-p 67` (67% prevalence threshold).
+2. After each profile, runs `inspectah scan` with a unique `INSPECTAH_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
+3. Aggregates the three host tarballs into a fleet tarball using `inspectah fleet aggregate`.
 
 **Usage:**
 
@@ -553,7 +553,7 @@ Users/Groups:         2 users, 1 group, 1 sudoers rule, 1 SSH key
 Secrets:              6 fake credentials planted
 
 Stamp file: /etc/driftify.stamp
-Run inspectah: sudo ./driftify.py --run-inspectah
+Run inspectah: sudo inspectah scan
 ```
 
 This summary directly maps to what inspectah should find. During development, you can compare driftify's summary against inspectah's audit report to verify full coverage.
@@ -568,7 +568,7 @@ This summary directly maps to what inspectah should find. During development, yo
 
 **driftify does not test version-specific edge cases exhaustively.** It works on both RHEL/CentOS 9 and 10 by adapting to the detected version, but it doesn't maintain separate coverage maps per version. If a inspectah detection path is version-specific, that should be tested in inspectah's own test suite with version-pinned fixtures.
 
-**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `inspectah-fleet`. See the Fleet Testing section below.
+**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `inspectah fleet aggregate`. See the Fleet Testing section below.
 
 ## Dependencies
 

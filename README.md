@@ -27,13 +27,13 @@ driftify is the fixture half of the inspectah development workflow. Apply drift,
 sudo ./driftify.py --profile standard -y
 
 # 2. Run inspectah to inspect the drifted system
-curl -fsSL https://raw.githubusercontent.com/marrusl/inspectah/main/run-inspectah.sh | sudo bash
+sudo inspectah scan
 
 # Or use driftify's built-in handoff:
 sudo ./driftify.py --profile standard -y --run-inspectah
 ```
 
-The `--run-inspectah` flag downloads and runs `run-inspectah.sh` immediately after drift is applied, writing artifacts to `--inspectah-output` (default: `./inspectah-output`). The output includes an inspection snapshot, HTML report, and Containerfile ready for `inspectah refine` and `inspectah architect`.
+The `--run-inspectah` flag runs `inspectah scan` immediately after drift is applied, writing artifacts to `--inspectah-output` (default: `./inspectah-output`). The output includes an inspection snapshot, HTML report, and Containerfile ready for `inspectah refine` and `inspectah architect`.
 
 ## Usage
 
@@ -64,7 +64,7 @@ sudo ./driftify.py --undo-first             # reverse previous run, then apply d
 | `-y`, `--yes` | Skip interactive confirmation prompt |
 | `-q`, `--quiet` | Show only section banners, warnings, and errors |
 | `--verbose` | Reserved for future use |
-| `--run-inspectah` | After applying drift, download and run `run-inspectah.sh` |
+| `--run-inspectah` | After applying drift, run `inspectah scan` to inspect the system |
 | `--inspectah-output DIR` | Output directory for inspectah artifacts (default: `./inspectah-output`) |
 
 #### Sections
@@ -130,11 +130,11 @@ For per-profile breakdowns of each section, see [docs/coverage-detail.md](docs/c
 - **Idempotent** -- safe to run twice without breaking the system.
 - **Fake secrets** -- plants realistic-looking but obviously synthetic credentials to exercise inspectah's redaction.
 - **Human-readable output** -- colored section banners with step counters. Degrades to plain text when stdout is not a TTY.
-- **inspectah handoff** -- `--run-inspectah` downloads and runs `run-inspectah.sh` immediately after drift is applied.
+- **inspectah handoff** -- `--run-inspectah` runs `inspectah scan` immediately after drift is applied.
 
 ## Fleet testing
 
-`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs inspectah after each with a unique hostname, then aggregates the results into a fleet tarball. It prefers an `inspectah` binary in the current directory; otherwise it uses the one in `$PATH`.
+`run-fleet-test.sh` automates the full fleet test loop: applies all three driftify profiles in sequence, runs `inspectah scan` after each with a unique hostname, then aggregates the results into a fleet tarball. It prefers an `inspectah` binary in the current directory; otherwise it uses the one in `$PATH`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/marrusl/driftify/main/run-fleet-test.sh -o run-fleet-test.sh

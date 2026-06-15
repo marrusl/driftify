@@ -463,10 +463,6 @@ class Driftify:
         "users", "secrets",
     }
 
-    _INSPECTAH_SCRIPT_URL = (
-        "https://raw.githubusercontent.com/marrusl/inspectah/main/run-inspectah.sh"
-    )
-
     def __init__(self, profile: str, dry_run: bool, skip_sections: list,
                  yes: bool = False,
                  quiet: bool = False, verbose: bool = False,
@@ -2894,36 +2890,39 @@ domain=INTERNAL
         )
         self.run_cmd(["dnf", "remove", "-y", "ruby"], check=False)
 
-    def _launch_inspectah(self) -> None:
-        """Download run-inspectah.sh from the inspectah repo and execute it."""
-        import urllib.request
-        import tempfile
-        import stat
+    def _find_inspectah(self):
+        """Locate the inspectah binary: ./inspectah first, then $PATH."""
+        import shutil as _shutil
+        local = Path("./inspectah")
+        if local.is_file() and os.access(local, os.X_OK):
+            return str(local.resolve())
+        result = _shutil.which("inspectah")
+        if result:
+            return result
+        return None
 
+    def _launch_inspectah(self) -> None:
+        """Run 'inspectah scan' to inspect the drifted system."""
         _banner(f"{_I.ROCKET}  Launching inspectah")
-        _info(f"{_I.DOWNLOAD}  Script: {self._INSPECTAH_SCRIPT_URL}")
+
+        binary = self._find_inspectah()
+        if binary is None:
+            _warn("inspectah binary not found in current directory or $PATH.")
+            _warn("Install inspectah from https://github.com/marrusl/inspectah/releases")
+            return
+
+        cmd = [binary, "scan", "-o", self.inspectah_output]
         _info(f"{_I.DATABASE}  Output: {self.inspectah_output}")
 
         if self.dry_run:
-            _dry(f"curl {self._INSPECTAH_SCRIPT_URL} | sh")
+            _dry(" ".join(cmd))
             return
 
-        script_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".sh", delete=False, mode="w"
-            ) as tf:
-                script_path = tf.name
-            with urllib.request.urlopen(self._INSPECTAH_SCRIPT_URL, timeout=60) as resp:
-                with open(script_path, "w") as fh:
-                    fh.write(resp.read().decode())
-            os.chmod(script_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
-            # Stream stdout+stderr live so the user sees container progress,
-            # but accumulate the output so we can check it on failure.
             if not self.quiet:
-                _info(f"Running: sh {script_path}")
+                _info(f"Running: {' '.join(cmd)}")
             proc = subprocess.Popen(
-                ["sh", script_path],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -2961,12 +2960,6 @@ domain=INTERNAL
                     _warn(f"inspectah completed but no tarball found in {parent_path}")
         except Exception as exc:
             _warn(f"Could not launch inspectah: {exc}")
-        finally:
-            if script_path:
-                try:
-                    os.unlink(script_path)
-                except OSError:
-                    pass
 
     def _print_next_steps(self) -> None:
         """Print a 'Next steps' block after a successful inspectah run."""
@@ -2980,7 +2973,7 @@ domain=INTERNAL
         _banner(f"{_I.DOWNLOAD}  Next steps")
         _info(f"{_I.ROCKET}  Copy the tarball to your workstation and review:")
         _info(f"             scp {hostname}:{parent_path / tarball_name} .")
-        _info(f"             inspectah-refine {tarball_name}")
+        _info(f"             inspectah refine {tarball_name}")
 
     def _print_summary(self) -> None:
         elapsed = time.monotonic() - self._t0
@@ -3164,9 +3157,7 @@ domain=INTERNAL
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")
         if not self.run_inspectah:
             _info(f"{_I.ROCKET}  Run inspectah: sudo ./driftify.py --run-inspectah")
-            _info(f"             or: curl -fsSL "
-                  f"https://raw.githubusercontent.com/marrusl/inspectah/main/"
-                  f"run-inspectah.sh | sudo sh")
+            _info(f"             or: sudo inspectah scan")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -3229,7 +3220,7 @@ examples:
     )
     p.add_argument(
         "--run-inspectah", action="store_true",
-        help="after applying drift, download and run run-inspectah.sh",
+        help="after applying drift, run 'inspectah scan' to inspect the system",
     )
     p.add_argument(
         "--inspectah-output", default="./inspectah-output", metavar="DIR",

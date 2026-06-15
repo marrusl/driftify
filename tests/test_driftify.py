@@ -580,7 +580,7 @@ class TestConfirmation(DriftifyTestCase):
             d._launch_inspectah()
         self._suppress.__enter__()
         output = buf.getvalue()
-        self.assertIn("run-inspectah.sh", output)
+        self.assertIn("inspectah", output)
         self.assertIn("/tmp/test-out", output)
 
     def test_quiet_flag_parsed(self):
