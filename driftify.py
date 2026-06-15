@@ -39,7 +39,6 @@ BASE_PACKAGES = {
     "minimal": [
         "httpd", "nginx", "vim-enhanced", "tmux", "jq",
         "python3-pip", "git", "wget", "curl", "bind-utils",
-        "podman",
     ],
     "standard": [
         "rsync", "lsof", "strace", "tcpdump", "nmap-ncat",
@@ -1201,7 +1200,7 @@ class Driftify:
         if unique:
             _info(f"Removing {len(unique)} packages...")
             r = self.run_cmd(
-                ["dnf", "remove", "-y"] + unique,
+                ["dnf", "remove", "-y", "--exclude=inspectah"] + unique,
                 check=False, capture=self.quiet,
             )
             if r is not None and r.returncode != 0:
@@ -1214,7 +1213,7 @@ class Driftify:
                 _info(f"Bulk remove failed{detail}; "
                       "falling back to one-by-one removal...")
                 for pkg in unique:
-                    self.run_cmd(["dnf", "remove", "-y", pkg], check=False)
+                    self.run_cmd(["dnf", "remove", "-y", "--exclude=inspectah", pkg], check=False)
 
         for repo_pkg in ("epel-release", "rpmfusion-free-release"):
             r = self.run_cmd(

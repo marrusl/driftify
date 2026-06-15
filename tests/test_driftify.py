@@ -460,8 +460,8 @@ class TestUndoRpmBulkRemoveFallback(DriftifyTestCase):
 
         self.assertIn("Bulk remove failed; falling back to one-by-one removal...", output)
         self.assertNotIn("protected-package conflict", output)
-        self.assertIn((["dnf", "remove", "-y", "pkg-a"], False, False), calls)
-        self.assertIn((["dnf", "remove", "-y", "pkg-b"], False, False), calls)
+        self.assertIn((["dnf", "remove", "-y", "--exclude=inspectah", "pkg-a"], False, False), calls)
+        self.assertIn((["dnf", "remove", "-y", "--exclude=inspectah", "pkg-b"], False, False), calls)
 
     def test_protected_package_failure_mentions_protected_packages(self):
         output, _ = self._run_undo_rpm(
@@ -476,7 +476,7 @@ class TestUndoRpmBulkRemoveFallback(DriftifyTestCase):
     def test_non_quiet_bulk_remove_keeps_live_output(self):
         _, calls = self._run_undo_rpm()
         self.assertIn(
-            (["dnf", "remove", "-y", "pkg-a", "pkg-b"], False, False),
+            (["dnf", "remove", "-y", "--exclude=inspectah", "pkg-a", "pkg-b"], False, False),
             calls,
         )
 
