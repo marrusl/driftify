@@ -2910,7 +2910,7 @@ domain=INTERNAL
             _warn("Install inspectah from https://github.com/marrusl/inspectah/releases")
             return
 
-        cmd = [binary, "scan", "-o", self.inspectah_output]
+        cmd = [binary, "scan", "--preserve", "all", "--ack-sensitive", "-o", self.inspectah_output]
         _info(f"{_I.DATABASE}  Output: {self.inspectah_output}")
 
         if self.dry_run:
