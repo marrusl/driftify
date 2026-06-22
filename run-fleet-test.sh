@@ -81,11 +81,10 @@ sudo hostnamectl set-hostname "$ORIGINAL_HOSTNAME"
 
 echo ""
 echo "=== Aggregating fleet ==="
-# Rust fleet uses: inspectah fleet aggregate <inputs...>
 # Collect the 3 most recent tarballs into the staging directory.
 # shellcheck disable=SC2012
 ls -1t *.tar.gz | head -3 | xargs -I{} cp {} "$FLEET_DIR/"
-"$INSPECTAH" fleet aggregate "${AGGREGATE_FLAGS[@]}" "$FLEET_DIR"
+"$INSPECTAH" aggregate "${AGGREGATE_FLAGS[@]}" "$FLEET_DIR"
 
 echo ""
 echo "=== Fleet tarball ==="
