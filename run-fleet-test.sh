@@ -22,12 +22,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-SCAN_FLAGS=(--preserve all --ack-sensitive)
+SCAN_FLAGS=(--preserve all --ack-sensitive --include-unmanaged --yes)
 AGGREGATE_FLAGS=(--ack-sensitive)
 if $NO_REDACTION; then
-    SCAN_FLAGS=(--no-redaction --ack-sensitive)
+    SCAN_FLAGS=(--no-redaction --ack-sensitive --include-unmanaged --yes)
 elif [[ -n "$PRESERVE" ]]; then
-    SCAN_FLAGS=(--preserve "$PRESERVE" --ack-sensitive)
+    SCAN_FLAGS=(--preserve "$PRESERVE" --ack-sensitive --include-unmanaged --yes)
 fi
 
 # Prefer a local binary in cwd; fall back to $PATH.
