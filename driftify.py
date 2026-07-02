@@ -2596,6 +2596,43 @@ domain=INTERNAL
                 mode=0o755,
             )
 
+            # Files in RPM-owned /usr tree (image-mode violation)
+            _info(f"{_I.WARN}  Planting non-RPM files in /usr (image-mode violation fixtures)")
+            self._write_managed_text(
+                "/usr/bin/custom-tool",
+                "#!/bin/bash\n"
+                "# Non-RPM script in /usr/bin — driftify fixture\n"
+                "# In image mode, /usr is read-only (composefs). This file\n"
+                "# must be COPY'd into the image at build time.\n"
+                'echo "custom-tool running"\n',
+            )
+            if not self.dry_run:
+                os.chmod("/usr/bin/custom-tool", 0o755)
+
+            self._write_managed_text(
+                "/usr/lib/systemd/system/myapp.service",
+                "[Unit]\n"
+                "Description=Custom App Service (driftify fixture)\n"
+                "After=network.target\n\n"
+                "[Service]\n"
+                "Type=simple\n"
+                "ExecStart=/usr/bin/custom-tool\n"
+                "Restart=on-failure\n\n"
+                "[Install]\n"
+                "WantedBy=multi-user.target\n",
+            )
+
+            self._ensure_dir(Path("/usr/share/myapp"))
+            self._write_managed_text(
+                "/usr/share/myapp/config.default",
+                "# Shared data — driftify fixture\n"
+                "default_timeout=30\n",
+            )
+            self._write_managed_text(
+                "/usr/share/myapp/templates.json",
+                '{"version": 1, "templates": ["base", "extended"]}\n',
+            )
+
         if self.needs_profile("kitchen-sink"):
             # Ruby + gems: exercises non-RPM language package detection
             self._install_ruby_gems()
@@ -2611,6 +2648,29 @@ domain=INTERNAL
                 self.run_cmd(["strip", mystery], check=False)
             else:
                 _dry(f"cp /usr/bin/true {mystery} && strip {mystery}")
+
+            _info(f"{_I.WARN}  Planting deep /usr fixtures (kitchen-sink)")
+            self._write_managed_text(
+                "/usr/sbin/custom-daemon",
+                "#!/bin/bash\n# Daemon stub — driftify fixture\nexit 0\n",
+            )
+            if not self.dry_run:
+                os.chmod("/usr/sbin/custom-daemon", 0o755)
+
+            # Stub library in /usr/lib64
+            self._write_managed_text(
+                "/usr/lib64/libcustom.so",
+                "# Stub .so — driftify fixture\n"
+                "# Not a real ELF binary; exercises /usr unmanaged file detection\n",
+            )
+
+            # Helper script at spec-exact path
+            self._write_managed_text(
+                "/usr/libexec/myapp-helper",
+                "#!/bin/bash\n# Helper script — driftify fixture\nexit 0\n",
+            )
+            if not self.dry_run:
+                os.chmod("/usr/libexec/myapp-helper", 0o755)
 
     def _download_go_probe(self) -> None:
         """Download yq from GitHub releases as a real Go binary."""
