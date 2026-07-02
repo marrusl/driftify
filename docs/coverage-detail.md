@@ -12,11 +12,11 @@ Enable httpd/nginx, disable kdump, mask bluetooth, drop-in overrides (httpd at s
 
 ## config
 
-Modified RPM-owned configs, unowned app configs, orphaned configs, IPA client certs (auth/identity standard+), keytab files (auth/identity standard+), SSSD config/cache (auth/identity standard+), PAM faillock config (auth/identity standard+), custom PAM drop-in (auth/identity standard+), authselect profile (auth/identity standard+), AD/winbind smb.conf (auth/identity kitchen-sink), LDAP cert (auth/identity kitchen-sink), tmpfiles.d entries for appone/cleanup (tmpfiles.d standard+), tmpfiles.d age-based cleanup (tmpfiles.d kitchen-sink), custom tuned profile dir (performance tuning standard+), rsyslog forwarding config (logging/monitoring standard+), journald config (logging/monitoring standard+), AIDE config (logging/monitoring kitchen-sink), logrotate config (logging/monitoring kitchen-sink), auditd rules (logging/monitoring kitchen-sink), cross-tree symlinks /etc→/var, /opt→/usr (cross-tree symlinks standard+), nested symlink chains (cross-tree symlinks kitchen-sink), ifcfg network config (legacy compat kitchen-sink), xinetd config (legacy compat kitchen-sink), anacrontab entries (legacy compat kitchen-sink), cron.allow (legacy compat kitchen-sink).
+Modified RPM-owned configs, unowned app configs, orphaned configs, IPA client certs (auth/identity standard+), keytab files (auth/identity standard+), SSSD config/cache (auth/identity standard+), PAM faillock config (auth/identity standard+), custom PAM drop-in (auth/identity standard+), authselect profile (auth/identity standard+), AD/winbind smb.conf (auth/identity kitchen-sink), LDAP cert (auth/identity kitchen-sink), tmpfiles.d entries for appone/cleanup (tmpfiles.d standard+), tmpfiles.d age-based cleanup (tmpfiles.d kitchen-sink), custom tuned profile dir (performance tuning standard+), rsyslog forwarding config (logging/monitoring standard+), journald config (logging/monitoring standard+), AIDE config (logging/monitoring kitchen-sink), logrotate config (logging/monitoring kitchen-sink), auditd rules (logging/monitoring kitchen-sink), cross-tree symlinks /etc→/var, /opt→/usr (cross-tree symlinks standard+), nested symlink chains (cross-tree symlinks kitchen-sink), xinetd config (legacy compat kitchen-sink), anacrontab entries (legacy compat kitchen-sink), cron.allow (legacy compat kitchen-sink).
 
 ## network
 
-Firewalld rules, custom zones, /etc/hosts entries, NetworkManager profiles, proxy environment.
+Firewalld rules, custom zones, /etc/hosts entries, NetworkManager profiles, proxy environment, ifcfg network config (legacy compat standard+).
 
 ## storage
 

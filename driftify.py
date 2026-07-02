@@ -776,9 +776,15 @@ class Driftify:
                     "; mask bluetooth (if present)"
                     "; drop-in overrides for httpd (override.conf, limits.conf=8192)"
                     "; driftify-backup timer/service pair"
+                    "; node_exporter service"
+                    "; legacy SysVinit script"
+                    "; systemd unit shadow for sshd"
                 )
             if self.needs_profile("kitchen-sink"):
-                svcs += ", nginx; limits.conf overwritten (LimitNOFILE=65535, LimitNPROC=4096)"
+                svcs += (
+                    ", nginx; limits.conf overwritten (LimitNOFILE=65535, LimitNPROC=4096)"
+                    "; xinetd service"
+                )
             lines.append(svcs)
 
         if "config" in active:
@@ -788,13 +794,23 @@ class Driftify:
                 cfgs += (
                     ", sshd Port\u21922222, chrony; create /etc/myapp/database.conf"
                     "; nsswitch +sss, SSSD/Kerberos, alternatives python3"
+                    "; IPA certs, keytabs, SSSD cache"
+                    "; PAM faillock, custom PAM drop-in, authselect"
+                    "; tmpfiles.d entries (appone, cleanup)"
+                    "; rsyslog forwarding, journald config"
+                    "; custom tuned profile, hugepages/THP sysctl"
+                    "; cross-tree symlinks /etc\u2192/var, /opt\u2192/usr"
                 )
             if self.needs_profile("kitchen-sink"):
                 cfgs += (
                     "; sshd Port\u21922200 + cipher/MAC/kex overrides"
                     "; chrony corp NTP servers; httpd MaxRequestWorkers 512"
                     "; database.conf overwritten; limits, auditd"
-                    "; nsswitch +winbind"
+                    "; nsswitch +winbind, AD/winbind smb.conf, LDAP cert"
+                    "; AIDE config, logrotate config, audit rules"
+                    "; tmpfiles.d age-based cleanup"
+                    "; nested symlink chains"
+                    "; xinetd config, anacrontab entries, cron.allow"
                 )
             cfgs += ") + drop /etc/myapp/ configs"
             lines.append(cfgs)
@@ -814,7 +830,7 @@ class Driftify:
         if "network" in active:
             net = "Add firewall rules (http, https, 8080/tcp), /etc/hosts entries"
             if self.needs_profile("standard"):
-                net += ", NM profile, proxy"
+                net += ", NM profile, proxy, ifcfg-eth1"
             if self.needs_profile("kitchen-sink"):
                 net += ", static route, direct.xml"
             lines.append(net)
@@ -831,6 +847,8 @@ class Driftify:
             sch = "Create cron jobs (/etc/cron.d, /etc/cron.daily)"
             if self.needs_profile("standard"):
                 sch += ", /etc/crontab entry, systemd timer pair, at job, per-user crontab"
+            if self.needs_profile("kitchen-sink"):
+                sch += ", anacrontab entries, cron.allow"
             lines.append(sch)
 
         if "nonrpm" in active:
@@ -839,8 +857,10 @@ class Driftify:
             if self.needs_profile("standard"):
                 nrpm += ", npm project (/opt/webapp/), git repo (/opt/tools/some-tool/)"
                 nrpm += ", deploy.sh script"
+                nrpm += ", files in /usr (/usr/bin/custom-tool, /usr/lib/systemd/system/myapp.service, /usr/share/myapp/)"
             if self.needs_profile("kitchen-sink"):
                 nrpm += ", ruby + gems (bundler, sinatra), mystery binary (stripped)"
+                nrpm += ", more /usr files (/usr/sbin/custom-daemon, /usr/lib64/libcustom.so, /usr/libexec/myapp-helper)"
             lines.append(nrpm)
 
         if "containers" in active:
@@ -855,8 +875,9 @@ class Driftify:
             ker = "Apply 6 sysctl overrides (/etc/sysctl.d/99-driftify.conf)"
             if self.needs_profile("standard"):
                 ker += ", load br_netfilter, modprobe.d options, dracut config, grub audit=1"
+                ker += ", hugepages sysctl, THP disable (live+GRUB+sysctl)"
             if self.needs_profile("kitchen-sink"):
-                ker += " + panic=60"
+                ker += " + panic=60, CPU isolation GRUB args, IRQ affinity, NUMA sysctl"
             lines.append(ker)
 
         if "selinux" in active:
@@ -1025,6 +1046,13 @@ class Driftify:
         self._remove_path("/opt/tools/some-tool")
         self._remove_path("/usr/local/bin/deploy.sh")
         self._remove_path("/usr/local/bin/mystery-tool")
+        self._remove_path("/usr/bin/custom-tool")
+        self._remove_path("/usr/lib/systemd/system/myapp.service")
+        self._remove_path("/usr/share/myapp")
+        self._remove_path("/usr/sbin/custom-daemon")
+        self._remove_path("/usr/lib64/libcustom.so")
+        self._remove_path("/usr/libexec/myapp-helper")
+        self._remove_path("/usr/bin/actual-tool")
 
     def undo_selinux(self) -> None:
         _info("Undoing SELinux...")
@@ -1043,6 +1071,9 @@ class Driftify:
         self._remove_path("/etc/modules-load.d/driftify.conf")
         self._remove_path("/etc/modprobe.d/driftify.conf")
         self._remove_path("/etc/dracut.conf.d/driftify.conf")
+        self._remove_path("/etc/sysctl.d/numa.conf")
+        self._remove_path("/etc/sysconfig/irqbalance")
+        self._remove_path("/etc/udev/rules.d/60-scheduler.rules")
 
     def undo_containers(self) -> None:
         _info("Undoing containers...")
@@ -1066,6 +1097,8 @@ class Driftify:
         self.run_cmd(["systemctl", "disable", "myapp-report.timer"], check=False)
         self._remove_path("/etc/systemd/system/myapp-report.timer")
         self._remove_path("/etc/systemd/system/myapp-report.service")
+        self._remove_managed_block("/etc/anacrontab", "driftify-anacron")
+        self._remove_path("/etc/cron.allow")
         self.run_cmd(["systemctl", "daemon-reload"], check=False)
 
     def undo_users(self) -> None:
@@ -1111,6 +1144,7 @@ class Driftify:
         self._remove_path("/etc/profile.d/proxy.sh")
         self._remove_path("/etc/sysconfig/network-scripts/route-eth0")
         self._remove_path("/etc/firewalld/direct.xml")
+        self._remove_path("/etc/sysconfig/network-scripts/ifcfg-eth1")
 
     def undo_config(self) -> None:
         _info("Undoing config files...")
@@ -1140,6 +1174,27 @@ class Driftify:
         self._remove_path("/etc/profile.d/custom-env.sh")
         self._remove_path("/etc/logrotate.d/myapp")
         self._remove_path("/etc/words.conf")
+        self._remove_path("/etc/tmpfiles.d/appone.conf")
+        self._remove_path("/etc/tmpfiles.d/cleanup.conf")
+        self._remove_path("/etc/tmpfiles.d/apptwo-cleanup.conf")
+        self._remove_path("/etc/tmpfiles.d/mixed-app.conf")
+        self._remove_path("/etc/security/faillock.conf")
+        self._remove_path("/etc/pam.d/custom-sshd")
+        self._remove_path("/etc/authselect/authselect.conf")
+        self._remove_path("/etc/rsyslog.d/forward-to-siem.conf")
+        self._remove_path("/etc/systemd/journald.conf.d/custom.conf")
+        self._remove_path("/etc/xinetd.d/custom-service")
+        self._remove_path("/etc/aide.conf")
+        self._remove_path("/etc/logrotate.d/myapp")
+        self._remove_path("/etc/audit/rules.d/custom.rules")
+        self._remove_path("/etc/mydb/config.yaml")
+        self._remove_path("/opt/myapp/lib")
+        self._remove_path("/etc/app/ssl")
+        self._remove_path("/opt/tool/bin/run")
+        self._remove_path("/usr/local/bin/run-tool")
+        self._remove_path("/etc/tuned/myapp")
+        self._remove_path("/etc/sysctl.d/hugepages.conf")
+        self._remove_path("/etc/sysctl.d/thp.conf")
 
         self.run_cmd(
             ["firewall-cmd", "--permanent", "--remove-port=2222/tcp"],
@@ -1181,6 +1236,10 @@ class Driftify:
         self._remove_path("/etc/systemd/system/driftify-backup.service")
         self._remove_path("/etc/systemd/system/httpd.service.d")
         self._remove_path("/etc/systemd/system/nginx.service.d")
+        self._remove_path("/etc/init.d/legacy-app")
+        self._remove_path("/etc/systemd/system/sshd.service")
+        self.run_cmd(["systemctl", "stop", "node_exporter"], check=False)
+        self.run_cmd(["systemctl", "disable", "node_exporter"], check=False)
         self.run_cmd(["systemctl", "daemon-reload"], check=False)
 
     def undo_rpm(self) -> None:
@@ -3683,18 +3742,24 @@ domain=INTERNAL
 
         # ── Services ─────────────────────────────────────────────────────────
         if "services" not in self.skip:
-            en  = 2
+            en  = 2 + (1 if self.needs_profile("standard") else 0)  # +node_exporter
             dis = 1
             mas = 1 + (1 if self.needs_profile("standard") else 0)
             dropin = (1 if self.needs_profile("standard") else 0) + \
                      (1 if self.needs_profile("kitchen-sink") else 0)
             timer_pair = 1 if self.needs_profile("standard") else 0
+            legacy_scripts = 1 if self.needs_profile("standard") else 0
+            unit_shadows = 1 if self.needs_profile("standard") else 0
+            xinetd_svc = 1 if self.needs_profile("kitchen-sink") else 0
             parts = []
             if en:     parts.append(f"{en} enabled")
             if dis:    parts.append(f"{dis} disabled")
             if mas:    parts.append(f"{mas} masked")
             if dropin: parts.append(f"{dropin} drop-in override(s)")
             if timer_pair: parts.append(f"{timer_pair} timer unit pair")
+            if legacy_scripts: parts.append(f"{legacy_scripts} legacy SysVinit script(s)")
+            if unit_shadows: parts.append(f"{unit_shadows} unit shadow(s)")
+            if xinetd_svc: parts.append(f"{xinetd_svc} xinetd service(s)")
             if self.needs_profile("standard"):
                 parts.append("tuned\u2192throughput-performance")
             svc_str = ", ".join(parts) if parts else "none"
@@ -3709,9 +3774,18 @@ domain=INTERNAL
                 "RPM + unowned config drift",
             ]
             if self.needs_profile("standard"):
-                cfg_parts += ["nsswitch +sss", "SSSD/Kerberos", "alternatives python3"]
+                cfg_parts += [
+                    "nsswitch +sss", "SSSD/Kerberos", "alternatives python3",
+                    "auth/identity (IPA certs, keytabs, PAM, authselect)",
+                    "tmpfiles.d (2 entries)", "logging/monitoring (rsyslog, journald)",
+                    "performance tuning (hugepages, THP)", "cross-tree symlinks (5 entries)"
+                ]
             if self.needs_profile("kitchen-sink"):
-                cfg_parts.append("nsswitch +winbind")
+                cfg_parts += [
+                    "nsswitch +winbind", "AD/winbind + LDAP cert",
+                    "AIDE, logrotate, auditd", "tmpfiles.d age-based cleanup",
+                    "nested symlink chains", "legacy compat (xinetd, anacrontab, cron.allow)"
+                ]
             cfg_str = ", ".join(cfg_parts)
         else:
             cfg_str = "skipped"
@@ -3721,7 +3795,7 @@ domain=INTERNAL
         if "network" not in self.skip:
             net_parts = ["3 firewall rules", "hosts entries"]
             if self.needs_profile("standard"):
-                net_parts += ["zone", "NM profile", "proxy"]
+                net_parts += ["zone", "NM profile", "proxy", "ifcfg-eth1"]
             net_str = ", ".join(net_parts)
         else:
             net_str = "skipped"
@@ -3739,6 +3813,8 @@ domain=INTERNAL
             sch_parts = ["2 cron files"]
             if self.needs_profile("standard"):
                 sch_parts += ["1 crontab entry", "1 timer", "1 at job", "1 per-user crontab"]
+            if self.needs_profile("kitchen-sink"):
+                sch_parts += ["anacrontab entries", "cron.allow"]
             sch_str = ", ".join(sch_parts)
         else:
             sch_str = "skipped"
@@ -3758,9 +3834,9 @@ domain=INTERNAL
         if "nonrpm" not in self.skip:
             nrpm_parts = ["Python venv", "Go binary (yq)"]
             if self.needs_profile("standard"):
-                nrpm_parts += ["npm project", "git repo", "deploy.sh"]
+                nrpm_parts += ["npm project", "git repo", "deploy.sh", "3 /usr files"]
             if self.needs_profile("kitchen-sink"):
-                nrpm_parts += ["ruby + gems"]
+                nrpm_parts += ["ruby + gems", "3 more /usr files"]
             nrpm_str = ", ".join(nrpm_parts)
         else:
             nrpm_str = "skipped"
@@ -3771,7 +3847,10 @@ domain=INTERNAL
             ker_parts = ["6 sysctl values applied"]
             if self.needs_profile("standard"):
                 ker_parts += ["br_netfilter loaded", "modprobe.d config",
-                              "dracut config", "grub audit=1"]
+                              "dracut config", "grub audit=1",
+                              "hugepages sysctl", "THP disabled"]
+            if self.needs_profile("kitchen-sink"):
+                ker_parts += ["CPU isolation", "IRQ affinity", "NUMA sysctl"]
             ker_str = ", ".join(ker_parts)
         else:
             ker_str = "skipped"
