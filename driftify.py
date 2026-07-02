@@ -1376,9 +1376,16 @@ class Driftify:
             )
             self.run_cmd(["dnf", "remove", "-y", GHOST_PACKAGE], check=False)
 
+            self._try_install(
+                ["golang-github-prometheus-node_exporter"],
+                label="node_exporter",
+            )
+
         # DNF module streams and version locks (kitchen-sink)
         # Exercises inspectah's detection of enabled module streams and version locks
         if self.needs_profile("kitchen-sink"):
+            self._try_install(["aide"], label="AIDE")
+
             # Check if dnf module streams are available before enabling
             if self.dry_run:
                 _info(f"{_I.PUZZLE}  Enabling DNF module stream: postgresql:15")
@@ -1481,6 +1488,12 @@ class Driftify:
                 "[Service]\n"
                 "TimeoutStartSec=600\n"
                 "LimitNOFILE=65535\n",
+            )
+
+            _info(f"{_I.TOGGLE}  Enabling node_exporter")
+            self.run_cmd(
+                ["systemctl", "enable", "node_exporter"],
+                check=False,
             )
 
             # limits.conf drop-in: establishes a baseline fd limit that
@@ -1653,6 +1666,27 @@ export LOG_LEVEL=info
                 "pool_size = 10\n",
             )
 
+            # rsyslog forwarding
+            _info(f"{_I.FILE}  Planting rsyslog forwarding config")
+            self._ensure_dir(Path("/etc/rsyslog.d"))
+            self._write_managed_text(
+                "/etc/rsyslog.d/forward-to-siem.conf",
+                "# Remote log forwarding — driftify fixture\n"
+                "*.* @@siem.internal.example.com:514\n",
+            )
+
+            # journald customization
+            _info(f"{_I.FILE}  Planting custom journald config")
+            self._ensure_dir(Path("/etc/systemd/journald.conf.d"))
+            self._write_managed_text(
+                "/etc/systemd/journald.conf.d/custom.conf",
+                "[Journal]\n"
+                "Storage=persistent\n"
+                "SystemMaxUse=2G\n"
+                "RateLimitIntervalSec=60s\n"
+                "RateLimitBurst=10000\n",
+            )
+
             # Identity stack: nsswitch + SSSD/Kerberos
             self._modify_nsswitch()
             self._install_sssd_kerberos()
@@ -1744,6 +1778,60 @@ export LOG_LEVEL=info
                 create_if_missing=False,
             )
             self._set_or_append_directive("/etc/audit/auditd.conf", "max_log_file", "max_log_file = 64")
+
+            # AIDE config with custom rules
+            _info(f"{_I.SHIELD}  Planting custom AIDE config and initializing")
+            self._write_managed_text(
+                "/etc/aide.conf",
+                "# AIDE config — driftify fixture\n"
+                "@@define DBDIR /var/lib/aide\n"
+                "@@define LOGDIR /var/log/aide\n"
+                "database_in=file:@@{DBDIR}/aide.db.gz\n"
+                "database_out=file:@@{DBDIR}/aide.db.new.gz\n"
+                "database_new=file:@@{DBDIR}/aide.db.new.gz\n"
+                "gzip_dbout=yes\n\n"
+                "# Custom rules — driftify fixture\n"
+                "DRIFTIFY_WEB = p+u+g+sha256\n"
+                "/var/www DRIFTIFY_WEB\n"
+                "/opt/myapp DRIFTIFY_WEB\n\n"
+                "# Standard rules\n"
+                "/etc NORMAL\n"
+                "/boot NORMAL\n",
+            )
+            import shutil as _shutil_aide
+            if _shutil_aide.which("aide"):
+                self.run_cmd(["aide", "--init"], check=False)
+                if not self.dry_run and Path("/var/lib/aide/aide.db.new.gz").exists():
+                    self.run_cmd(
+                        ["cp", "/var/lib/aide/aide.db.new.gz",
+                         "/var/lib/aide/aide.db.gz"],
+                        check=False,
+                    )
+            else:
+                _warn("aide not found — skipping AIDE init")
+
+            # Custom logrotate
+            self._write_managed_text(
+                "/etc/logrotate.d/myapp",
+                "/var/log/myapp/*.log {\n"
+                "    daily\n"
+                "    rotate 14\n"
+                "    compress\n"
+                "    missingok\n"
+                "    notifempty\n"
+                "    create 0640 root root\n"
+                "}\n",
+            )
+
+            # Custom auditd rules
+            self._ensure_dir(Path("/etc/audit/rules.d"))
+            self._write_managed_text(
+                "/etc/audit/rules.d/custom.rules",
+                "# Custom audit rules — driftify fixture\n"
+                "-w /etc/shadow -p wa -k shadow-changes\n"
+                "-w /etc/passwd -p wa -k passwd-changes\n"
+                "-w /etc/sudoers -p wa -k sudoers-changes\n",
+            )
 
             # Override sshd port to 2200 (replaces standard's 2222) and
             # add cipher/MAC/kex hardening — produces a cross-profile variant.
