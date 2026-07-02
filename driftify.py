@@ -1841,9 +1841,9 @@ export LOG_LEVEL=info
             if not self.dry_run:
                 os.chmod("/usr/bin/actual-tool", 0o755)
                 # /usr/local/bin/run-tool -> /usr/bin/actual-tool
+                self._ensure_dir(Path("/usr/local/bin"))
                 link1 = Path("/usr/local/bin/run-tool")
                 if not link1.exists():
-                    self._ensure_dir(Path("/usr/local/bin"))
                     link1.symlink_to("/usr/bin/actual-tool")
                     _sub("Created /usr/local/bin/run-tool -> /usr/bin/actual-tool")
                 # /opt/tool/bin/run -> /usr/local/bin/run-tool
