@@ -97,6 +97,8 @@ This is the core of the design. Each section maps to a inspectah inspector and s
 | `dnf install` then `dnf remove` a package (e.g., `words`) | dnf history ghost — installed-then-removed package | standard |
 | `dnf install` ~10 more packages across profiles | Larger package delta, more realistic Containerfile | standard |
 | `dnf install` development tools (gcc, make, kernel-devel) | Build dependencies that shouldn't be in prod image | kitchen-sink |
+| `dnf install node_exporter` | Monitoring package (logging/monitoring) | standard |
+| `dnf install aide` | File integrity package (logging/monitoring) | kitchen-sink |
 
 On Fedora, the `_RHEL_ONLY_PACKAGES` set (`epel-release`, `initscripts-rename-device`, `initscripts-service`, `insights-client`, `rhc`) guards against accidentally installing RHEL-specific packages; any package in this set that appears in a profile's install list is excluded when `os_id == "fedora"`.
 
@@ -113,6 +115,10 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Drop-in override `httpd.service.d/override.conf` (`TimeoutStartSec=600`, `LimitNOFILE=65535`) | systemd drop-in override for service tuning | standard |
 | Drop-in override `nginx.service.d/override.conf` (`LimitNOFILE=131072`, `ExecStartPost` hook) | systemd drop-in with post-start hook | kitchen-sink |
 | Enable generated timers (see Scheduled Tasks) | Timer enablement | standard |
+| `systemctl enable node_exporter` | Monitoring service enablement (logging/monitoring) | standard |
+| Legacy SysVinit script at `/etc/init.d/legacy-app` | Legacy init script detection (legacy compat) | standard |
+| `systemctl enable xinetd` | Legacy service enablement (legacy compat) | kitchen-sink |
+| Full systemd unit shadow for sshd.service | Unit shadow replacing RPM-shipped unit (unit shadows) | standard |
 
 ### Config Inspector
 
@@ -126,6 +132,32 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Modify `/etc/chrony.conf` — add NTP servers | Modified RPM-owned config | standard |
 | Modify `/etc/security/limits.conf` — add nofile limits | Modified RPM-owned config | kitchen-sink |
 | Modify `/etc/audit/auditd.conf` — increase log size | Modified RPM-owned config | kitchen-sink |
+| IPA client certs in `/etc/ipa/` | Auth/identity infrastructure (auth/identity) | standard |
+| Kerberos keytab file `/etc/krb5.keytab` | Auth/identity infrastructure (auth/identity) | standard |
+| SSSD config `/etc/sssd/sssd.conf` and cache | Auth/identity infrastructure (auth/identity) | standard |
+| PAM faillock config `/etc/security/faillock.conf` | Auth hardening (auth/identity) | standard |
+| Custom PAM drop-in `/etc/pam.d/custom-auth` | Custom PAM config (auth/identity) | standard |
+| Authselect profile selection | Auth profile management (auth/identity) | standard |
+| AD/winbind smb.conf `/etc/samba/smb.conf` | AD integration (auth/identity) | kitchen-sink |
+| Machine keytab for AD | AD infrastructure (auth/identity) | kitchen-sink |
+| LDAP cert `/etc/openldap/certs/ldapcert.pem` | LDAP infrastructure (auth/identity) | kitchen-sink |
+| SSSD hybrid provider config | Hybrid auth (auth/identity) | kitchen-sink |
+| tmpfiles.d entries `/etc/tmpfiles.d/appone.conf`, `/etc/tmpfiles.d/cleanup.conf` | tmpfiles.d infrastructure (tmpfiles.d) | standard |
+| tmpfiles.d age-based cleanup entry | tmpfiles.d advanced (tmpfiles.d) | kitchen-sink |
+| Custom tuned profile `/etc/tuned/myprofile/` | Performance tuning profile (performance tuning) | standard |
+| rsyslog forwarding config `/etc/rsyslog.d/forward.conf` | Log forwarding (logging/monitoring) | standard |
+| journald config `/etc/systemd/journald.conf` tweaks | Journal tuning (logging/monitoring) | standard |
+| AIDE config `/etc/aide.conf` | File integrity (logging/monitoring) | kitchen-sink |
+| logrotate config `/etc/logrotate.d/myapp` | Log rotation (logging/monitoring) | kitchen-sink |
+| auditd rules `/etc/audit/rules.d/custom.rules` | Audit rules (logging/monitoring) | kitchen-sink |
+| Cross-tree symlink `/etc/mydb/config → /var/lib/mydb/config` | Config → /var symlink (cross-tree symlinks) | standard |
+| Cross-tree symlink `/opt/myapp/lib → /usr/local/myapp/lib` | /opt → /usr symlink (cross-tree symlinks) | standard |
+| Cross-tree symlink `/etc/app/ssl → /var/app/certs` | Config → /var SSL symlink (cross-tree symlinks) | kitchen-sink |
+| Nested symlink chain `/opt/tool → /usr/local → /usr/bin` | Multi-hop symlinks (cross-tree symlinks) | kitchen-sink |
+| ifcfg network config `/etc/sysconfig/network-scripts/ifcfg-eth0` | Legacy network config (legacy compat) | kitchen-sink |
+| xinetd config `/etc/xinetd.d/myservice` | Legacy service config (legacy compat) | kitchen-sink |
+| anacrontab entries `/etc/anacrontab` | Legacy scheduled tasks (legacy compat) | kitchen-sink |
+| cron.allow `/etc/cron.allow` | Cron access control (legacy compat) | kitchen-sink |
 
 #### Unowned config files (not from any RPM)
 
@@ -164,6 +196,8 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Add CIFS entry to `/etc/fstab` (non-functional — uses `noauto`) | CIFS mount with credential reference | standard |
 | Create `/etc/auto.master.d/app.autofs` and `/etc/auto.app` | Automount map | kitchen-sink |
 | Create app data dirs under `/var/lib/myapp/`, `/var/log/myapp/` | Application state in /var (data migration plan) | minimal |
+| Create unbacked /var dirs `/var/lib/pgsql`, `/var/lib/myapp`, `/var/cache/myapp` | Unbacked /var directories (tmpfiles.d) | standard |
+| Create mixed-backing /var tree (some fstab, some local) | Mixed /var backing (tmpfiles.d) | kitchen-sink |
 
 ### Scheduled Task Inspector
 
@@ -316,6 +350,12 @@ This is the most involved section because it needs to exercise multiple detectio
 | Create a git-cloned directory at `/opt/tools/some-tool/` with `.git` | Git-managed directory with remote URL | standard |
 | Place a shell script with a shebang at `/usr/local/bin/deploy.sh` | Script detection (non-binary) | standard |
 | Place pip packages with `.so` files (e.g., numpy) in a venv | C extension detection → multi-stage build hint | kitchen-sink |
+| Place custom tool at `/usr/bin/custom-tool` | Non-RPM binary in /usr (files in /usr) | standard |
+| Place systemd unit at `/usr/lib/systemd/system/myapp.service` | Non-RPM systemd unit in /usr (files in /usr) | standard |
+| Place app files at `/usr/share/myapp/` | Non-RPM share files in /usr (files in /usr) | standard |
+| Place daemon at `/usr/sbin/custom-daemon` | Non-RPM sbin binary in /usr (files in /usr) | kitchen-sink |
+| Place library at `/usr/lib64/libcustom.so` | Non-RPM library in /usr (files in /usr) | kitchen-sink |
+| Place helper at `/usr/libexec/myapp-helper` | Non-RPM libexec binary in /usr (files in /usr) | kitchen-sink |
 
 **Binary provisioning:**
 
@@ -336,6 +376,11 @@ Recommendation: option 2 for standard/minimal (download `yq` — it's broadly us
 | Add module load in `/etc/modules-load.d/driftify.conf` | Explicitly loaded module | standard |
 | Add dracut config in `/etc/dracut.conf.d/driftify.conf` | Custom dracut configuration | standard |
 | Modify `/etc/default/grub` to add kernel args | Custom kernel boot parameters | kitchen-sink |
+| Add hugepages sysctl in `/etc/sysctl.d/hugepages.conf` | Hugepages configuration (performance tuning) | standard |
+| Disable THP via live sysctl, GRUB arg, and sysctl.d | THP tuning (performance tuning) | standard |
+| Add CPU isolation GRUB args `isolcpus=2-7` | CPU isolation (performance tuning) | kitchen-sink |
+| Configure IRQ affinity via `/proc/irq/*/smp_affinity` | IRQ tuning (performance tuning) | kitchen-sink |
+| Add NUMA sysctl settings | NUMA tuning (performance tuning) | kitchen-sink |
 
 **Sysctl values chosen to be safe and realistic:**
 
@@ -361,6 +406,16 @@ br_netfilter
 ```
 
 `br_netfilter` is safe (available on any RHEL 9/10 kernel), commonly loaded for container networking, and clearly an operator choice rather than an auto-loaded dependency.
+
+### Platform Inspector
+
+| What driftify does | What inspectah should detect | Profile |
+|---|---|---|
+| Detect EL8 platform via `/etc/os-release` | EL8 platform detection (el8 support) | standard |
+| Use `_try_install` wrapper for EL8-conditional packages | Safe package install on EL8 (el8 support) | standard |
+| Use `_el8_safe_tmpfiles` wrapper for tmpfiles.d on EL8 | Safe tmpfiles.d handling on EL8 (el8 support) | standard |
+
+EL8 support ensures driftify can run on RHEL/CentOS Stream 8 systems by detecting the platform and adapting package installation and tmpfiles.d handling accordingly.
 
 ### SELinux/Security Inspector
 

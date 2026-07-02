@@ -103,15 +103,16 @@ Profiles are cumulative: `standard` includes everything in `minimal`, and `kitch
 
 | Section | inspectah inspector | What driftify plants |
 |---------|-----------------|---------------------|
-| rpm | Package inspector | Repo setup, base + extra-repo packages, ghost packages |
-| services | Service inspector | Enabled/disabled/masked services, drop-in overrides |
-| config | Config inspector | Modified RPM-owned configs, unowned app configs, orphaned configs |
+| rpm | Package inspector | Repo setup, base + extra-repo packages, ghost packages, monitoring packages |
+| services | Service inspector | Enabled/disabled/masked services, drop-in overrides, unit shadows, legacy init scripts |
+| config | Config inspector | Modified RPM-owned configs, unowned app configs, orphaned configs, auth/identity files, tmpfiles.d, tuned profiles, logging configs, cross-tree symlinks, legacy network configs |
 | network | Network inspector | Firewalld rules, custom zones, /etc/hosts, NM profiles |
-| storage | Storage inspector | NFS/CIFS fstab entries, app data dirs |
+| storage | Storage inspector | NFS/CIFS fstab entries, app data dirs, unbacked /var dirs |
 | scheduled | Scheduled inspector | Cron jobs, systemd timers, at jobs |
 | containers | Container inspector | Quadlet units, docker-compose.yml |
-| nonrpm | Non-RPM inspector | pip venvs, npm projects, Go binaries, git repos |
-| kernel | Kernel inspector | Sysctl overrides, modules-load.d, dracut, GRUB args |
+| nonrpm | Non-RPM inspector | pip venvs, npm projects, Go binaries, git repos, files in /usr |
+| kernel | Kernel inspector | Sysctl overrides, modules-load.d, dracut, GRUB args, performance tuning |
+| platform | Platform inspector | EL8 support detection and safe wrappers |
 | selinux | SELinux inspector | Booleans, audit rules, custom policy modules |
 | users | User inspector | App users/groups, sudoers, SSH keys |
 | secrets | Secrets inspector | Fake AWS keys, PEM blocks, DB strings, API tokens |
@@ -163,7 +164,7 @@ Each topology generates fleet-ready tarballs containing merged inspection snapsh
 
 | Platform | Status |
 |---|---|
-| RHEL 8.x / CentOS Stream 8 | Supported |
+| RHEL 8.x / CentOS Stream 8 | Supported (EL8-specific fixtures and safe wrappers) |
 | CentOS Stream 9 | Tested |
 | CentOS Stream 10 | Tested |
 | RHEL 9.6+ | Tested |
