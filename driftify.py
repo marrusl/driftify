@@ -1524,6 +1524,44 @@ class Driftify:
                 "ExecStart=/usr/local/bin/backup.sh\n",
             )
 
+            # Full unit shadow (contrasts with existing drop-in pattern)
+            _info(f"{_I.TOGGLE}  Creating full sshd.service shadow")
+            result = self.run_cmd(
+                ["cat", "/usr/lib/systemd/system/sshd.service"],
+                check=False, capture=True,
+            )
+            if not self.dry_run and result is not None and result.returncode == 0:
+                unit_content = result.stdout
+                modified = unit_content.replace(
+                    "ExecStart=/usr/sbin/sshd",
+                    "ExecStart=/usr/sbin/sshd -o LogLevel=VERBOSE",
+                )
+                if modified != unit_content:
+                    self._write_managed_text(
+                        "/etc/systemd/system/sshd.service",
+                        modified,
+                    )
+                    _sub("Full shadow: /etc/systemd/system/sshd.service")
+                else:
+                    self._write_managed_text(
+                        "/etc/systemd/system/sshd.service",
+                        "[Unit]\n"
+                        "Description=OpenSSH server daemon (driftify shadow)\n"
+                        "After=network.target\n\n"
+                        "[Service]\n"
+                        "Type=notify\n"
+                        "ExecStart=/usr/sbin/sshd -D -o LogLevel=VERBOSE\n"
+                        "ExecReload=/bin/kill -HUP $MAINPID\n"
+                        "Restart=on-failure\n\n"
+                        "[Install]\n"
+                        "WantedBy=multi-user.target\n",
+                    )
+                    _sub("Full shadow (fallback): /etc/systemd/system/sshd.service")
+            elif self.dry_run:
+                _dry("Write full unit shadow to /etc/systemd/system/sshd.service")
+
+            self.run_cmd(["systemctl", "daemon-reload"], check=False)
+
         if self.needs_profile("kitchen-sink"):
             # Drop-in override for nginx: higher fd limit and a post-start
             # deploy notification hook.
