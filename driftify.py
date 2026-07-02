@@ -1660,6 +1660,51 @@ export LOG_LEVEL=info
             # Python alternatives: pick a non-default version if available
             self._set_alternatives()
 
+            # PAM faillock config
+            _info(f"{_I.SHIELD}  Planting PAM faillock config")
+            self._write_managed_text(
+                "/etc/security/faillock.conf",
+                "# PAM faillock — driftify synthetic fixture\n"
+                "deny = 5\n"
+                "unlock_time = 900\n"
+                "fail_interval = 900\n"
+                "audit\n"
+                "even_deny_root\n",
+            )
+
+            # Custom PAM drop-in (exercises inspectah pam_configs collection)
+            _info(f"{_I.SHIELD}  Planting custom PAM config")
+            self._write_managed_text(
+                "/etc/pam.d/custom-sshd",
+                "#%PAM-1.0\n"
+                "# Custom SSH PAM stack — driftify fixture\n"
+                "auth       required     pam_sepermit.so\n"
+                "auth       substack     password-auth\n"
+                "auth       required     pam_faillock.so preauth\n"
+                "account    required     pam_nologin.so\n"
+                "account    include      password-auth\n"
+                "password   include      password-auth\n"
+                "session    required     pam_loginuid.so\n"
+                "session    include      password-auth\n",
+            )
+
+            # authselect: run if available, plant files directly if not
+            import shutil as _shutil_authselect
+            if _shutil_authselect.which("authselect"):
+                _info(f"{_I.SHIELD}  Setting authselect profile to sssd")
+                self.run_cmd(
+                    ["authselect", "select", "sssd", "with-faillock", "--force"],
+                    check=False,
+                )
+            else:
+                _info(f"{_I.SHIELD}  authselect not found — planting profile files directly")
+                self._ensure_dir(Path("/etc/authselect"))
+                self._write_managed_text(
+                    "/etc/authselect/authselect.conf",
+                    "profile-id = sssd\n"
+                    "features = with-faillock\n",
+                )
+
         if self.needs_profile("kitchen-sink"):
             self._append_managed_block(
                 "/etc/security/limits.conf",
@@ -2161,6 +2206,51 @@ domain=INTERNAL
                         check=False,
                     )
 
+            # Identity infrastructure: IPA client enrollment artifacts
+            _info(f"{_I.SHIELD}  Planting IPA client enrollment artifacts")
+            self._ensure_dir(Path("/etc/ipa"))
+            self._write_managed_text(
+                "/etc/ipa/ca.crt",
+                "-----BEGIN CERTIFICATE-----\n"
+                "MIIDfTCCAmWgAwIBAgIJAKDriftifyFakeCA0DQELBQAwXzELMAkGA1UE\n"
+                "BhMCVVMxDTALBgNVBAoMBERFTU8xGDAWBgNVBAsMD0RyaWZ0aWZ5IFRl\n"
+                "c3QgQ0ExEzARBgNVBAMMCmlwYS5sb2NhbA==\n"
+                "-----END CERTIFICATE-----\n",
+            )
+            self._ensure_dir(Path("/var/lib/ipa-client/sysrestore"))
+            self._write_managed_text(
+                "/var/lib/ipa-client/sysrestore/sysrestore.state",
+                "[authconfig]\nprofile = sssd\n",
+            )
+
+            # Kerberos keytab (synthetic, non-functional)
+            self._write_managed_text(
+                "/etc/krb5.keytab",
+                "# Synthetic keytab — driftify fixture\n"
+                "# inspectah should detect keytab presence\n",
+            )
+
+            # SSSD config
+            self._ensure_dir(Path("/etc/sssd"))
+            self._write_managed_text(
+                "/etc/sssd/sssd.conf",
+                "[sssd]\n"
+                "services = nss, pam, sudo\n"
+                "domains = ipa.local\n"
+                "config_file_version = 2\n\n"
+                "[domain/ipa.local]\n"
+                "id_provider = ipa\n"
+                "auth_provider = ipa\n"
+                "ipa_server = ipa.local\n"
+                "ipa_domain = ipa.local\n",
+            )
+            if not self.dry_run:
+                Path("/etc/sssd/sssd.conf").chmod(0o600)
+
+            # SSSD cache dirs
+            for d in ("db", "mc", "pipes", "pipes/private"):
+                self._ensure_dir(Path(f"/var/lib/sss/{d}"))
+
         if self.needs_profile("kitchen-sink"):
             # Rootless container user mappings
             self._append_managed_block(
@@ -2175,6 +2265,54 @@ domain=INTERNAL
                 "appuser:100000:65536",
                 create_if_missing=False,
             )
+
+            _info(f"{_I.SHIELD}  Planting AD/winbind artifacts")
+            self._ensure_dir(Path("/etc/samba"))
+            self._write_managed_text(
+                "/etc/samba/smb.conf",
+                "[global]\n"
+                "workgroup = DRIFTIFY\n"
+                "realm = AD.DRIFTIFY.LOCAL\n"
+                "security = ads\n"
+                "kerberos method = secrets and keytab\n"
+                "template shell = /bin/bash\n"
+                "template homedir = /home/%U\n"
+                "idmap config * : backend = tdb\n"
+                "idmap config * : range = 10000-999999\n\n"
+                "# Winbind/SSSD hybrid — driftify fixture\n"
+                "[homes]\n"
+                "browseable = no\n"
+                "writable = yes\n",
+            )
+
+            # Machine keytab for AD join
+            self._write_managed_text(
+                "/etc/krb5.keytab.ad",
+                "# AD machine keytab — driftify fixture\n"
+                "# Synthetic keytab for AD-joined host\n",
+            )
+
+            self._ensure_dir(Path("/etc/openldap/certs"))
+            self._write_managed_text(
+                "/etc/openldap/certs/ldap-client.pem",
+                "-----BEGIN CERTIFICATE-----\n"
+                "MIICfTCCAeagAwIBAgIJAKDriftifyFakeLDAP\n"
+                "-----END CERTIFICATE-----\n",
+            )
+
+            # Winbind/SSSD hybrid: SSSD config referencing AD domain
+            self._write_managed_text(
+                "/etc/sssd/conf.d/ad-domain.conf",
+                "[domain/ad.driftify.local]\n"
+                "id_provider = ad\n"
+                "auth_provider = ad\n"
+                "ad_server = dc.ad.driftify.local\n"
+                "ad_domain = ad.driftify.local\n"
+                "ldap_id_mapping = true\n"
+                "fallback_homedir = /home/%u@%d\n",
+            )
+            if not self.dry_run:
+                Path("/etc/sssd/conf.d/ad-domain.conf").chmod(0o600)
 
     # ── Containers ─────────────────────────────────────────────────────────
 
