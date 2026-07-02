@@ -297,6 +297,7 @@ class _I:
     MASK     = "\uf070"   # eye-slash
     RECYCLE  = "\uf1b8"   # recycle (ghost)
     STAMP    = "\uf249"   # id-badge
+    LINK     = "\uf0c1"   # link
 
 SECTION_ICONS = {
     "rpm":        _I.PACKAGE,
@@ -1769,6 +1770,41 @@ export LOG_LEVEL=info
                     # tmpfiles.d entry text is still correct
                     pass
 
+            # Cross-tree symlinks (exercises inspectah advisory)
+            _info(f"{_I.LINK}  Creating cross-tree symlinks")
+            # /etc -> /var: config externalized to persistent storage
+            self._ensure_dir(Path("/var/lib/mydb"))
+            self._write_managed_text(
+                "/var/lib/mydb/config.yaml",
+                "# Database config — lives in /var (persistent)\n"
+                "host: localhost\n"
+                "port: 5432\n"
+                "max_connections: 100\n",
+            )
+            self._ensure_dir(Path("/etc/mydb"))
+            if not self.dry_run:
+                link = Path("/etc/mydb/config.yaml")
+                if not link.exists():
+                    link.symlink_to("/var/lib/mydb/config.yaml")
+                    _sub("Created /etc/mydb/config.yaml -> /var/lib/mydb/config.yaml")
+            else:
+                _dry("ln -s /var/lib/mydb/config.yaml /etc/mydb/config.yaml")
+
+            # /opt -> /usr: application linking into immutable tree
+            self._ensure_dir(Path("/usr/lib64/myapp"))
+            self._write_managed_text(
+                "/usr/lib64/myapp/libhelper.so",
+                "# Stub library — driftify fixture\n",
+            )
+            self._ensure_dir(Path("/opt/myapp"))
+            if not self.dry_run:
+                link = Path("/opt/myapp/lib")
+                if not link.exists():
+                    link.symlink_to("/usr/lib64/myapp")
+                    _sub("Created /opt/myapp/lib -> /usr/lib64/myapp/")
+            else:
+                _dry("ln -s /usr/lib64/myapp /opt/myapp/lib")
+
         if self.needs_profile("kitchen-sink"):
             self._append_managed_block(
                 "/etc/security/limits.conf",
@@ -1778,6 +1814,47 @@ export LOG_LEVEL=info
                 create_if_missing=False,
             )
             self._set_or_append_directive("/etc/audit/auditd.conf", "max_log_file", "max_log_file = 64")
+
+            # TLS certs externalized to /var (spec path: /etc/app/ssl)
+            self._ensure_dir(Path("/var/lib/app/ssl"))
+            self._write_managed_text(
+                "/var/lib/app/ssl/cert.pem",
+                "-----BEGIN CERTIFICATE-----\n"
+                "MIICfTCCAeagAwIBAgIJAKDriftifyFakeTLS\n"
+                "-----END CERTIFICATE-----\n",
+            )
+            self._ensure_dir(Path("/etc/app"))
+            if not self.dry_run:
+                link = Path("/etc/app/ssl")
+                if not link.exists():
+                    link.symlink_to("/var/lib/app/ssl")
+                    _sub("Created /etc/app/ssl -> /var/lib/app/ssl/")
+            else:
+                _dry("ln -s /var/lib/app/ssl /etc/app/ssl")
+
+            # Nested symlink chain: /opt -> /usr/local -> /usr
+            _info(f"{_I.LINK}  Creating nested symlink chain")
+            self._write_managed_text(
+                "/usr/bin/actual-tool",
+                "#!/bin/bash\necho 'actual-tool'\n",
+            )
+            if not self.dry_run:
+                os.chmod("/usr/bin/actual-tool", 0o755)
+                # /usr/local/bin/run-tool -> /usr/bin/actual-tool
+                link1 = Path("/usr/local/bin/run-tool")
+                if not link1.exists():
+                    self._ensure_dir(Path("/usr/local/bin"))
+                    link1.symlink_to("/usr/bin/actual-tool")
+                    _sub("Created /usr/local/bin/run-tool -> /usr/bin/actual-tool")
+                # /opt/tool/bin/run -> /usr/local/bin/run-tool
+                self._ensure_dir(Path("/opt/tool/bin"))
+                link2 = Path("/opt/tool/bin/run")
+                if not link2.exists():
+                    link2.symlink_to("/usr/local/bin/run-tool")
+                    _sub("Created /opt/tool/bin/run -> /usr/local/bin/run-tool")
+            else:
+                _dry("ln -s /usr/bin/actual-tool /usr/local/bin/run-tool")
+                _dry("ln -s /usr/local/bin/run-tool /opt/tool/bin/run")
 
             # AIDE config with custom rules
             _info(f"{_I.SHIELD}  Planting custom AIDE config and initializing")
