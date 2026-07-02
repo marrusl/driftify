@@ -2783,12 +2783,90 @@ domain=INTERNAL
                 'compress="gzip"\n',
             )
 
+            # Custom tuned profile directory
+            _info(f"{_I.LINUX}  Creating custom tuned profile")
+            self._ensure_dir(Path("/etc/tuned/myapp"))
+            self._write_managed_text(
+                "/etc/tuned/myapp/tuned.conf",
+                "[main]\n"
+                "summary=Custom app server profile — driftify fixture\n"
+                "include=throughput-performance\n\n"
+                "[sysctl]\n"
+                "vm.dirty_ratio=15\n"
+                "vm.dirty_background_ratio=5\n\n"
+                "[disk]\n"
+                "readahead=>4096\n\n"
+                "[cpu]\n"
+                "governor=performance\n"
+                "energy_perf_bias=performance\n",
+            )
+
+            # Hugepages sysctl
+            self._write_managed_text(
+                "/etc/sysctl.d/hugepages.conf",
+                "# Hugepages — driftify fixture\n"
+                "vm.nr_hugepages = 128\n",
+            )
+            self.run_cmd(
+                ["sysctl", "-p", "/etc/sysctl.d/hugepages.conf"],
+                check=False,
+            )
+
+            # Disable transparent hugepages: live runtime change + persisted config
+            _info(f"{_I.LINUX}  Disabling transparent hugepages")
+            thp_path = "/sys/kernel/mm/transparent_hugepage/enabled"
+            if not self.dry_run:
+                try:
+                    with open(thp_path, "w") as f:
+                        f.write("never")
+                except (OSError, IOError):
+                    _warn(f"Could not write to {thp_path}")
+            else:
+                _dry(f"echo never > {thp_path}")
+            # Persist via GRUB arg
+            self._append_kernel_cmdline_arg("transparent_hugepage=never")
+            # Also persist via sysctl for the defrag side
+            self._write_managed_text(
+                "/etc/sysctl.d/thp.conf",
+                "# Disable THP defrag — driftify fixture\n"
+                "vm.compaction_proactiveness = 0\n",
+            )
+
             # GRUB hardening — add audit=1 at standard profile so inspectah's
             # GRUB defaults detection fires without requiring kitchen-sink
             if not self.needs_profile("kitchen-sink"):
                 self._append_kernel_cmdline_arg("audit=1")
 
         if self.needs_profile("kitchen-sink"):
+            _info(f"{_I.LINUX}  Adding CPU isolation GRUB args")
+            self._append_kernel_cmdline_arg(
+                "isolcpus=2-3 nohz_full=2-3 rcu_nocbs=2-3"
+            )
+
+            self._write_managed_text(
+                "/etc/sysconfig/irqbalance",
+                '# IRQ affinity — driftify fixture\n'
+                'IRQBALANCE_BANNED_CPULIST=2-3\n'
+                '#IRQBALANCE_ARGS=\n',
+            )
+
+            self._write_managed_text(
+                "/etc/sysctl.d/numa.conf",
+                "# NUMA tuning — driftify fixture\n"
+                "vm.zone_reclaim_mode = 1\n",
+            )
+            self.run_cmd(
+                ["sysctl", "-p", "/etc/sysctl.d/numa.conf"],
+                check=False,
+            )
+
+            self._write_managed_text(
+                "/etc/udev/rules.d/60-scheduler.rules",
+                '# Disk scheduler — driftify fixture\n'
+                'ACTION=="add|change", KERNEL=="sd[a-z]", '
+                'ATTR{queue/scheduler}="mq-deadline"\n',
+            )
+
             self._append_kernel_cmdline_arg("panic=60 audit=1")
 
     def _append_kernel_cmdline_arg(self, args: str) -> None:
