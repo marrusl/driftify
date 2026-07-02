@@ -1705,6 +1705,36 @@ export LOG_LEVEL=info
                     "features = with-faillock\n",
                 )
 
+            # tmpfiles.d fixtures: exercises ConfigCategory::Tmpfiles
+            _info(f"{_I.FILE}  Planting tmpfiles.d drop-ins")
+            self._write_managed_text(
+                "/etc/tmpfiles.d/appone.conf",
+                "# tmpfiles.d — driftify fixture (backed dir)\n"
+                + self._el8_safe_tmpfiles(
+                    "d /var/lib/appone/cache 0750 appuser appgroup 30d\n"
+                ),
+            )
+            self._write_managed_text(
+                "/etc/tmpfiles.d/cleanup.conf",
+                "# tmpfiles.d — driftify fixture (volatile runtime dir)\n"
+                + self._el8_safe_tmpfiles(
+                    "D /run/myapp 0755 root root -\n"
+                ),
+            )
+            # Create the dir that tmpfiles.d would manage
+            self._ensure_dir(Path("/var/lib/appone/cache"))
+            if not self.dry_run:
+                try:
+                    import pwd, grp
+                    uid = pwd.getpwnam("appuser").pw_uid
+                    gid = grp.getgrnam("appgroup").gr_gid
+                    os.chown("/var/lib/appone/cache", uid, gid)
+                    os.chmod("/var/lib/appone/cache", 0o750)
+                except KeyError:
+                    # appuser/appgroup not yet created (drift_users runs later)
+                    # tmpfiles.d entry text is still correct
+                    pass
+
         if self.needs_profile("kitchen-sink"):
             self._append_managed_block(
                 "/etc/security/limits.conf",
@@ -1777,6 +1807,29 @@ export LOG_LEVEL=info
             # Standard profile has sss-only; kitchen-sink adds winbind, producing
             # a content-hash difference that exercises fleet aggregation UI.
             self._modify_nsswitch_winbind()
+
+            # tmpfiles.d with age-based cleanup on persistent dirs
+            _info(f"{_I.FILE}  Planting kitchen-sink tmpfiles.d fixtures")
+            self._write_managed_text(
+                "/etc/tmpfiles.d/apptwo-cleanup.conf",
+                "# tmpfiles.d — driftify fixture (persistent dir with cleanup)\n"
+                + self._el8_safe_tmpfiles(
+                    "d /var/lib/apptwo/sessions 0755 root root 7d\n"
+                )
+                + self._el8_safe_tmpfiles(
+                    "d /var/lib/apptwo/cache 0755 root root 1d\n"
+                ),
+            )
+            self._ensure_dir(Path("/var/lib/apptwo/sessions"))
+            self._ensure_dir(Path("/var/lib/apptwo/cache"))
+
+            self._write_managed_text(
+                "/etc/tmpfiles.d/mixed-app.conf",
+                "# tmpfiles.d — driftify fixture (mixed backing)\n"
+                "d /var/lib/mixed-app 0755 root root -\n"
+                "d /var/lib/mixed-app/data 0755 root root -\n"
+                "# /var/lib/mixed-app/data/uploads/ intentionally unbacked\n",
+            )
 
     # ── Secrets ────────────────────────────────────────────────────────────
 
@@ -1941,6 +1994,27 @@ export NO_PROXY=localhost,127.0.0.1,.internal,github.com,githubusercontent.com,g
         self._ensure_dir(Path("/var/log/myapp"))
 
         if self.needs_profile("standard"):
+            # Hand-created /var dirs WITHOUT any backing mechanism
+            # inspectah should flag these as unbacked — advisory
+            _info(f"{_I.FOLDER}  Creating unbacked /var app directories")
+            for d in [
+                "/var/lib/pgsql/data",
+                "/var/log/myapp",
+                "/var/cache/myapp",
+            ]:
+                self._ensure_dir(Path(d))
+
+            # Ownership on pgsql data dir (postgres user may not exist yet)
+            if not self.dry_run:
+                try:
+                    import pwd
+                    pw = pwd.getpwnam("postgres")
+                    os.chown("/var/lib/pgsql/data", pw.pw_uid, pw.pw_gid)
+                except KeyError:
+                    pass  # postgres user not installed — dir stays root-owned
+            else:
+                _dry("chown postgres:postgres /var/lib/pgsql/data")
+
             # Standard: non-functional noauto fstab entries
             self._append_managed_block(
                 "/etc/fstab",
@@ -1964,6 +2038,20 @@ domain=INTERNAL
             )
 
         if self.needs_profile("kitchen-sink"):
+            # Nested /var tree with mixed backing:
+            # /var/lib/mixed-app/ — has tmpfiles.d
+            # /var/lib/mixed-app/data/ — has tmpfiles.d
+            # /var/lib/mixed-app/data/uploads/ — NO backing (hand-created)
+            # /var/lib/mixed-app/data/uploads/tmp/ — NO backing (hand-created)
+            _info(f"{_I.FOLDER}  Creating mixed-backing /var directory tree")
+            for d in [
+                "/var/lib/mixed-app",
+                "/var/lib/mixed-app/data",
+                "/var/lib/mixed-app/data/uploads",
+                "/var/lib/mixed-app/data/uploads/tmp",
+            ]:
+                self._ensure_dir(Path(d))
+
             # Kitchen-sink: autofs map
             self._write_managed_text(
                 "/etc/auto.master.d/app.autofs",
