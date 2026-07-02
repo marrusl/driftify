@@ -1480,6 +1480,32 @@ class Driftify:
             else:
                 _warn("bluetooth unit not found — skipping mask")
 
+            # SysVinit legacy script
+            _info(f"{_I.WARN}  Planting SysVinit legacy script")
+            self._ensure_dir(Path("/etc/init.d"))
+            self._write_managed_text(
+                "/etc/init.d/legacy-app",
+                "#!/bin/bash\n"
+                "# chkconfig: 2345 95 05\n"
+                "# description: Legacy application — driftify fixture\n"
+                "### BEGIN INIT INFO\n"
+                "# Provides:          legacy-app\n"
+                "# Required-Start:    $network $syslog\n"
+                "# Required-Stop:     $network $syslog\n"
+                "# Default-Start:     2 3 4 5\n"
+                "# Default-Stop:      0 1 6\n"
+                "# Short-Description: Legacy app service\n"
+                "### END INIT INFO\n\n"
+                "case \"$1\" in\n"
+                "  start)   echo 'Starting legacy-app' ;;\n"
+                "  stop)    echo 'Stopping legacy-app' ;;\n"
+                "  restart) echo 'Restarting legacy-app' ;;\n"
+                "  *)       echo 'Usage: $0 {start|stop|restart}' ;;\n"
+                "esac\n",
+            )
+            if not self.dry_run:
+                os.chmod("/etc/init.d/legacy-app", 0o755)
+
             # Drop-in override for httpd: increased startup timeout and file
             # descriptor limit, representative of a high-traffic deployment.
             _info(f"{_I.WRENCH}  Writing httpd.service.d/override.conf drop-in")
@@ -2038,6 +2064,25 @@ export LOG_LEVEL=info
                 "# /var/lib/mixed-app/data/uploads/ intentionally unbacked\n",
             )
 
+            # xinetd service config
+            self._try_install(["xinetd"], label="xinetd")
+            self._ensure_dir(Path("/etc/xinetd.d"))
+            self._write_managed_text(
+                "/etc/xinetd.d/custom-service",
+                "# xinetd service — driftify fixture\n"
+                "service custom-echo\n"
+                "{\n"
+                "    disable     = no\n"
+                "    type        = UNLISTED\n"
+                "    socket_type = stream\n"
+                "    protocol    = tcp\n"
+                "    port        = 9999\n"
+                "    wait        = no\n"
+                "    user        = nobody\n"
+                "    server      = /bin/echo\n"
+                "}\n",
+            )
+
     # ── Secrets ────────────────────────────────────────────────────────────
 
     def drift_secrets(self) -> None:
@@ -2124,6 +2169,23 @@ MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
         )
 
         if self.needs_profile("standard"):
+            # ifcfg network config — plant on all platforms for inspectah detection
+            # On EL9+/Fedora: ifcfg is deprecated (inspectah emits modernization advisory)
+            # On EL8: ifcfg is standard format (inspectah emits no advisory)
+            _info(f"{_I.GLOBE}  Planting ifcfg network config")
+            self._ensure_dir(Path("/etc/sysconfig/network-scripts"))
+            self._write_managed_text(
+                "/etc/sysconfig/network-scripts/ifcfg-eth1",
+                "TYPE=Ethernet\n"
+                "BOOTPROTO=static\n"
+                "NAME=eth1\n"
+                "DEVICE=eth1\n"
+                "ONBOOT=yes\n"
+                "IPADDR=10.0.1.100\n"
+                "NETMASK=255.255.255.0\n"
+                "GATEWAY=10.0.1.1\n",
+            )
+
             # Standard: custom firewalld zone
             self._write_managed_text(
                 "/etc/firewalld/zones/myapp.xml",
@@ -2374,6 +2436,23 @@ domain=INTERNAL
                 "MAILTO=ops@example.com\n"
                 "APP_ENV=production\n"
                 "30 6 * * 1-5 appuser /opt/myapp/scripts/weekday-report.sh\n",
+            )
+
+            # anacrontab entries
+            _info(f"{_I.CLOCK}  Planting anacrontab entries")
+            self._append_managed_block(
+                "/etc/anacrontab",
+                "driftify-anacron",
+                "# Custom anacron job — driftify fixture\n"
+                "7\t15\tcron.driftify-weekly\t/usr/local/bin/weekly-maintenance.sh\n",
+            )
+
+            # cron.allow for access control
+            self._write_managed_text(
+                "/etc/cron.allow",
+                "# Restricted cron access — driftify fixture\n"
+                "root\n"
+                "appuser\n",
             )
 
     def _queue_at_job(self) -> None:
