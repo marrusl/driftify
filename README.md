@@ -163,6 +163,7 @@ Each topology generates fleet-ready tarballs containing merged inspection snapsh
 
 | Platform | Status |
 |---|---|
+| RHEL 8.x / CentOS Stream 8 | Supported |
 | CentOS Stream 9 | Tested |
 | CentOS Stream 10 | Tested |
 | RHEL 9.6+ | Tested |

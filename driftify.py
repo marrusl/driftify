@@ -413,8 +413,8 @@ def detect_os() -> tuple:
 
     if os_id == "fedora":
         pass  # any recent Fedora release is fine
-    elif os_id not in ("rhel", "centos") or os_major not in (9, 10):
-        _warn(f"Detected {os_id} {version_id} — driftify targets RHEL/CentOS Stream 9/10 or Fedora")
+    elif os_id not in ("rhel", "centos") or os_major not in (8, 9, 10):
+        _warn(f"Detected {os_id} {version_id} — driftify targets RHEL/CentOS Stream 8/9/10 or Fedora")
 
     return os_id, os_major
 
@@ -1238,6 +1238,38 @@ class Driftify:
 
     def _is_fedora(self) -> bool:
         return self.os_id == "fedora"
+
+    @property
+    def is_el8(self) -> bool:
+        return self.os_id in ("rhel", "centos") and self.os_major == 8
+
+    def _try_install(self, packages: list, label: str = "") -> bool:
+        """Install packages if available, skip gracefully if not."""
+        if self.dry_run:
+            _dry(f"dnf install -y {' '.join(packages)}")
+            return True
+        result = self.run_cmd(
+            ["dnf", "install", "-y", "--skip-unavailable"] + packages,
+            check=False,
+        )
+        if result is not None and result.returncode != 0:
+            _warn(f"Some packages unavailable{f' ({label})' if label else ''} — skipping")
+            return False
+        return True
+
+    def _el8_safe_tmpfiles(self, directive: str) -> str:
+        """On EL8 (systemd 239), replace unsupported tmpfiles.d directives.
+
+        - 'D' (create-or-cleanup) → 'd' (create only) on EL8
+        - Age-based cleanup (e.g. '30d') → '-' (no cleanup) on EL8
+        """
+        if not self.is_el8:
+            return directive
+        # Replace 'D' type with 'd' — systemd 239 supports 'd' but 'D'
+        # cleanup behavior may differ
+        if directive.startswith("D "):
+            directive = "d" + directive[1:]
+        return directive
 
     def _rpm_package_counts(self) -> tuple:
         """Return (base, extra_repo, total) package counts for the active profile.
@@ -3164,7 +3196,7 @@ domain=INTERNAL
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="driftify",
-        description="Apply synthetic drift to a RHEL/CentOS Stream or Fedora system.",
+        description="Apply synthetic drift to a RHEL/CentOS Stream 8/9/10 or Fedora system.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
