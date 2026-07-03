@@ -1,7 +1,7 @@
 # Driftify Extended Findings — Design Spec
 
 **Date:** 2026-07-01
-**Status:** Approved (R3)
+**Status:** Approved (R4 — EL8 target mapping + networking-as-inventory)
 **Scope:** driftify additions + companion inspectah enhancements
 **Implementation:** One spec, two plans (driftify plan + inspectah plan)
 
@@ -214,7 +214,7 @@ This contrasts with the existing driftify coverage of drop-in overrides (`/etc/s
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum UnitOverrideType {
+pub enum ShadowType {
     DropIn,
     FullShadow,
 }
@@ -242,11 +242,10 @@ pub enum UnitOverrideType {
 | Legacy pattern | Detection | Modern replacement | Advisory text | OS predicate |
 |---|---|---|---|---|
 | SysVinit script | File in `/etc/init.d/`, no matching `.service` unit | systemd unit | "SysVinit script with no systemd equivalent — create a .service unit for image mode" | All (EL8+) |
-| ifcfg-* config | File in `/etc/sysconfig/network-scripts/ifcfg-*` | NM keyfile | "ifcfg format is deprecated — convert to NetworkManager keyfile" | EL9+ only |
 | xinetd config | File in `/etc/xinetd.d/` | systemd socket activation | "xinetd is deprecated — convert to systemd socket activation" | All (EL8+) |
 | anacrontab | Custom entries in `/etc/anacrontab` | systemd timer | "anacrontab is superseded by systemd timers" | All (EL8+) |
 
-On EL8, `ifcfg-*` is NOT deprecated and must NOT produce a modernization advisory. The OS version predicate is checked at advisory-emission time using the snapshot's OS metadata.
+**Note:** ifcfg-* is NOT in this table. Networking config is treated as host-specific inventory, not a modernization advisory. See §6.6 for the networking treatment.
 
 This is the exhaustive list for this pass. Additional legacy patterns are deferred (see §8).
 
@@ -509,7 +508,7 @@ The allowlist lives in the core crate as a `const` slice. It is product behavior
   - Package installs: check availability before `dnf install`, skip unavailable packages with a log message
   - tmpfiles.d: avoid directives unavailable on systemd 239
   - authselect: check for presence before use
-- Suppress `ifcfg-*` modernization advisory (ifcfg is standard on EL8)
+- ifcfg is NOT a modernization advisory on any platform — it's network inventory (see §6.6)
 - Add EL8 to supported platforms in README and `--help`
 
 **inspectah:**
@@ -519,7 +518,40 @@ The allowlist lives in the core crate as a `const` slice. It is product behavior
 
 **EL8 acceptance tests:** driftify must run cleanly on EL8 with `--profile standard`. All modernization advisories with "EL9+ only" predicates must NOT fire on EL8 snapshots.
 
-### 6.5 Modernization Advisory Scope
+### 6.5 EL8 Target Image Mapping
+
+EL8 support means **scanning** EL8 hosts — image mode does not exist for RHEL 8. The target base image in the generated Containerfile is always RHEL 9+.
+
+**Default target image mapping:**
+
+| Source host OS | Default target base image |
+|---|---|
+| RHEL 8.x | `registry.redhat.io/rhel9/rhel-bootc:latest` |
+| RHEL 9.x | `registry.redhat.io/rhel9/rhel-bootc:latest` |
+| RHEL 10.x | `registry.redhat.io/rhel10/rhel-bootc:latest` |
+| CentOS Stream 8 | `quay.io/centos-bootc/centos-bootc:stream9` |
+| CentOS Stream 9 | `quay.io/centos-bootc/centos-bootc:stream9` |
+| CentOS Stream 10 | `quay.io/centos-bootc/centos-bootc:stream10` |
+| Fedora | `quay.io/fedora/fedora-bootc:latest` |
+
+The minimum RHEL image-mode version is 9.6, but users typically pick `$latest` for their major version. Operators can override the target image via inspectah's existing `--base-image` flag.
+
+**Baseline subtraction:** When scanning an EL8 host, the baseline comparison is against the RHEL 9 base image (since that's the target). Packages present on EL8 but absent from the RHEL 9 base image are flagged as additions. This is correct behavior — the Containerfile needs to install them on the target.
+
+### 6.6 Networking Config Treatment
+
+**Networking config does NOT belong in the Containerfile.** It is host-specific state provisioned at deploy time via Ignition, cloud-init, kickstart, nmstate, or equivalent. The bootc model is "generic image + host-specific state at first boot." Networking is the canonical example of host-specific state.
+
+**inspectah treatment:** When inspectah detects networking customizations (ifcfg files, NM keyfiles, custom zones, static routes):
+- Show them in the **network section** of the report as informational inventory
+- Do NOT include them in the Containerfile
+- Do NOT produce modernization advisories for ifcfg format
+
+**Contextual note for EL8→EL9 scans:** When the source host uses ifcfg format and the target is RHEL 9+, the network section displays: "Source host uses ifcfg network scripts. RHEL 9+ targets use NetworkManager keyfiles by default. ifcfg support is deprecated in RHEL 9 and removed in RHEL 10. Plan network configuration separately for the target environment."
+
+**Rationale:** Network config is preserved during `bootc switch` (existing `/etc` carries over), so in-place migration doesn't lose it. For fleet/golden-image deploys, networking is injected at provisioning time, not baked into the image. Inspectah's value is surfacing the gap, not automating the conversion.
+
+### 6.7 Modernization Advisory Scope
 
 The enumerated list in §3.8 is the complete scope for this pass.
 
@@ -548,8 +580,8 @@ Representative fixture-to-finding mapping. One row per planted pattern. This is 
 | standard | EL9 | `/etc/mydb/config.yaml` → `/var/lib/mydb/` | config | Advisory (CrossTreeSymlink) | "Symlink crosses /etc → /var..." | `/etc/localtime` → `/usr/share/zoneinfo/` must NOT get advisory |
 | standard | EL9 | `/etc/systemd/system/sshd.service` (full shadow) | services | Actionable | `shadow_type: FullShadow`, rationale line on finding | Drop-in in `httpd.service.d/` must show `DropIn` |
 | standard | EL9 | `/etc/init.d/legacy-app` | config | Advisory (Modernization) | "SysVinit script with no systemd equivalent..." | — |
-| standard | EL9 | `/etc/sysconfig/network-scripts/ifcfg-eth1` | config | Advisory (Modernization) | "ifcfg format is deprecated..." | Must NOT fire on EL8 |
-| standard | EL8 | `/etc/sysconfig/network-scripts/ifcfg-eth1` | config | Actionable | Normal config finding, no modernization advisory | Advisory must NOT fire |
+| standard | EL9 | `/etc/sysconfig/network-scripts/ifcfg-eth1` | network | Informational inventory | Network section note: "ifcfg format, deprecated on target" | NOT in Containerfile, NOT a modernization advisory |
+| standard | EL8 | `/etc/sysconfig/network-scripts/ifcfg-eth1` | network | Informational inventory | Network section note: "ifcfg format, plan network config separately" | NOT in Containerfile |
 | standard | EL9 | `/etc/tuned/myapp/tuned.conf` | config | Actionable | Custom tuned profile directory | — |
 | standard | EL9 | node_exporter RPM + enabled service | services, rpm | Actionable | Detected as added package + enabled service | — |
 | kitchen-sink | EL9 | `/etc/xinetd.d/custom-service` | config | Advisory (Modernization) | "xinetd is deprecated..." | — |
@@ -576,8 +608,10 @@ Representative fixture-to-finding mapping. One row per planted pattern. This is 
 - Full /usr walk with rpm-dump diff, prune list, ancestor collapse (§3.3, §6.1, §6.2)
 - tmpfiles.d / StateDirectory= / RPM-backed /var dir advisory (§3.2)
 - Cross-tree symlink advisory with allowlist (§3.6, §6.3)
-- Modernization advisory system with OS-predicated pattern table (§3.8)
-- systemd drop-in vs. full shadow distinction with `UnitOverrideType` (§3.7)
+- Modernization advisory system with OS-predicated pattern table (§3.8) — ifcfg excluded, handled as network inventory (§6.6)
+- systemd drop-in vs. full shadow distinction with `ShadowType` (§3.7)
+- EL8 target image mapping — default base image selection per source OS (§6.5)
+- Network config as informational inventory, not Containerfile output (§6.6)
 - Section grouping presentation across HTML, refine, TUI, audit (§5.2)
 - Advisory presentation across all surfaces (§5.1)
 - EL8 platform compatibility in collect crate (§6.4)
