@@ -3108,11 +3108,17 @@ domain=INTERNAL
         """Create C-extension .so files in pip site-packages."""
         _info(f"{_I.PUZZLE}  Creating C-extension fixtures in site-packages")
 
-        # Find site-packages directory
-        site_packages = "/opt/myapp/venv/lib/python3.*/site-packages"
+        # Resolve actual site-packages path dynamically
+        venv_base = "/opt/myapp/venv"
+        import glob
+        site_packages_candidates = glob.glob(f"{venv_base}/lib/python3.*/site-packages")
+        if not site_packages_candidates:
+            _warn(f"No site-packages found under {venv_base}/lib/python3.*/")
+            return
+        site_packages = site_packages_candidates[0]
 
         # Create package subdirectory with C-extension
-        numpy_core = "/opt/myapp/venv/lib/python3.9/site-packages/numpy/core"
+        numpy_core = f"{site_packages}/numpy/core"
         self._ensure_dir(Path(numpy_core))
         self._write_managed_text(
             f"{numpy_core}/_multiarray.so",
@@ -3123,7 +3129,7 @@ domain=INTERNAL
 
         # Create top-level C-extension
         self._write_managed_text(
-            "/opt/myapp/venv/lib/python3.9/site-packages/ujson.cpython-311-x86_64-linux-gnu.so",
+            f"{site_packages}/ujson.cpython-311-x86_64-linux-gnu.so",
             "# Stub C-extension .so — driftify fixture\n"
             "# Simulates a compiled extension module\n",
         )
@@ -3175,7 +3181,7 @@ domain=INTERNAL
                 check=False,
             )
 
-        # /var/www deployment
+        # /var/www Node deployment
         www_app = "/var/www/webapp"
         self._ensure_dir(Path(www_app))
         self._write_managed_text(
@@ -3191,6 +3197,17 @@ domain=INTERNAL
         )
         self.run_cmd(
             ["npm", "install", "--prefix", www_app, "--quiet"],
+            check=False,
+        )
+
+        # /var/www Django venv
+        www_django = "/var/www/django-app"
+        www_venv = f"{www_django}/venv"
+        _info(f"  Creating Django venv at {www_venv}")
+        self._ensure_dir(Path(www_django))
+        self.run_cmd(["python3", "-m", "venv", www_venv], check=False)
+        self.run_cmd(
+            [f"{www_venv}/bin/pip", "install", "--quiet", "Django==4.2"],
             check=False,
         )
 
