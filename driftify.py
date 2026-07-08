@@ -2902,6 +2902,12 @@ domain=INTERNAL
             # npm project — nodejs installed via BASE_PACKAGES
             self._create_npm_project()
 
+            # npm global packages — unscoped and scoped, multi-prefix
+            self._create_npm_globals()
+
+            # C-extension .so files in pip site-packages
+            self._create_pip_c_extensions()
+
             # Git-initialised dir with a remote URL
             git_dir = "/opt/tools/some-tool"
             _info(f"{_I.PUZZLE}  Initialising git repo at {git_dir}")
@@ -2981,6 +2987,12 @@ domain=INTERNAL
         if self.needs_profile("kitchen-sink"):
             # Ruby + gems: exercises non-RPM language package detection
             self._install_ruby_gems()
+
+            # scan-home and /var/www fixtures — language environments in simulated user homes
+            self._create_scan_home_fixtures()
+
+            # system_site_packages venv — venv with include-system-site-packages
+            self._create_system_site_packages_venv()
 
             # Mystery binary: stripped copy of /usr/bin/true — no metadata,
             # no build ID; inspectah should flag this as unknown provenance
@@ -3074,6 +3086,137 @@ domain=INTERNAL
             ["npm", "install", "--prefix", npm_dir, "--quiet"],
             check=False,
         )
+
+    def _create_npm_globals(self) -> None:
+        """Create npm global packages — unscoped and scoped, multi-prefix."""
+        _info(f"{_I.PUZZLE}  Installing npm global packages")
+
+        # Install to /usr/lib/node_modules (system default)
+        self.run_cmd(
+            ["npm", "install", "-g", "--quiet", "pm2", "typescript"],
+            check=False,
+        )
+
+        # Install scoped packages to /usr/local/lib/node_modules
+        self.run_cmd(
+            ["npm", "install", "-g", "--prefix", "/usr/local", "--quiet",
+             "@angular/cli", "@types/node"],
+            check=False,
+        )
+
+    def _create_pip_c_extensions(self) -> None:
+        """Create C-extension .so files in pip site-packages."""
+        _info(f"{_I.PUZZLE}  Creating C-extension fixtures in site-packages")
+
+        # Find site-packages directory
+        site_packages = "/opt/myapp/venv/lib/python3.*/site-packages"
+
+        # Create package subdirectory with C-extension
+        numpy_core = "/opt/myapp/venv/lib/python3.9/site-packages/numpy/core"
+        self._ensure_dir(Path(numpy_core))
+        self._write_managed_text(
+            f"{numpy_core}/_multiarray.so",
+            "# Stub C-extension .so — driftify fixture\n"
+            "# Real C-extensions are ELF binaries; this is a text stub\n"
+            "# for detection testing\n",
+        )
+
+        # Create top-level C-extension
+        self._write_managed_text(
+            "/opt/myapp/venv/lib/python3.9/site-packages/ujson.cpython-311-x86_64-linux-gnu.so",
+            "# Stub C-extension .so — driftify fixture\n"
+            "# Simulates a compiled extension module\n",
+        )
+
+    def _create_scan_home_fixtures(self) -> None:
+        """Create language environments under simulated user homes and /var/www."""
+        _info(f"{_I.PUZZLE}  Creating scan-home and /var/www fixtures")
+
+        # Only create if appuser exists (created in drift_users)
+        if not self._user_exists("appuser"):
+            _sub("appuser doesn't exist — skipping scan-home fixtures")
+            return
+
+        # Python venv in user home
+        home_venv = "/home/appuser/.local/venv"
+        _info(f"  Creating venv at {home_venv}")
+        self.run_cmd(["python3", "-m", "venv", home_venv], check=False)
+        self.run_cmd(
+            [f"{home_venv}/bin/pip", "install", "--quiet", "Django", "celery"],
+            check=False,
+        )
+
+        # npm project in user home
+        home_npm = "/home/appuser/myproject"
+        self._ensure_dir(Path(home_npm))
+        self._write_managed_text(
+            f"{home_npm}/package.json",
+            '{\n'
+            '  "name": "user-project",\n'
+            '  "version": "0.1.0",\n'
+            '  "dependencies": {\n'
+            '    "react": "^18.0.0"\n'
+            '  }\n'
+            '}\n',
+        )
+        self.run_cmd(
+            ["npm", "install", "--prefix", home_npm, "--quiet"],
+            check=False,
+        )
+
+        # Fix ownership for user home fixtures
+        if not self.dry_run:
+            self.run_cmd(
+                ["chown", "-R", "appuser:appgroup", "/home/appuser/.local"],
+                check=False,
+            )
+            self.run_cmd(
+                ["chown", "-R", "appuser:appgroup", home_npm],
+                check=False,
+            )
+
+        # /var/www deployment
+        www_app = "/var/www/webapp"
+        self._ensure_dir(Path(www_app))
+        self._write_managed_text(
+            f"{www_app}/package.json",
+            '{\n'
+            '  "name": "www-webapp",\n'
+            '  "version": "1.0.0",\n'
+            '  "dependencies": {\n'
+            '    "express": "^4.18.0",\n'
+            '    "helmet": "^7.0.0"\n'
+            '  }\n'
+            '}\n',
+        )
+        self.run_cmd(
+            ["npm", "install", "--prefix", www_app, "--quiet"],
+            check=False,
+        )
+
+    def _create_system_site_packages_venv(self) -> None:
+        """Create a venv with include-system-site-packages = true."""
+        _info(f"{_I.PUZZLE}  Creating venv with system-site-packages enabled")
+
+        venv_path = "/opt/shared-venv"
+        self.run_cmd(
+            ["python3", "-m", "venv", "--system-site-packages", venv_path],
+            check=False,
+        )
+        self.run_cmd(
+            [f"{venv_path}/bin/pip", "install", "--quiet", "pytest", "black"],
+            check=False,
+        )
+
+        # Verify pyvenv.cfg has the flag
+        pyvenv_cfg = Path(f"{venv_path}/pyvenv.cfg")
+        if pyvenv_cfg.exists() and not self.dry_run:
+            with open(pyvenv_cfg) as fh:
+                content = fh.read()
+                if "include-system-site-packages = true" in content:
+                    _info("  ✓ system-site-packages enabled in pyvenv.cfg")
+                else:
+                    _warn("  system-site-packages not found in pyvenv.cfg")
 
     # ── Kernel / Boot ──────────────────────────────────────────────────────
 
