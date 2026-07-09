@@ -2523,6 +2523,10 @@ domain=INTERNAL
         if self.dry_run:
             _dry("echo 'touch /tmp/driftify-at-probe' | at now + 1 hour")
             return
+        import shutil as _shutil
+        if not _shutil.which("at"):
+            _warn("at not found — skipping at job fixture")
+            return
         r = subprocess.run(
             ["at", "now", "+", "1", "hour"],
             input="touch /tmp/driftify-at-probe\n",
