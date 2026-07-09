@@ -298,6 +298,7 @@ class _I:
     RECYCLE  = "\uf1b8"   # recycle (ghost)
     STAMP    = "\uf249"   # id-badge
     LINK     = "\uf0c1"   # link
+    FILE     = "\uf15b"   # file
 
 SECTION_ICONS = {
     "rpm":        _I.PACKAGE,
