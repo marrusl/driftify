@@ -299,6 +299,7 @@ class _I:
     STAMP    = "\uf249"   # id-badge
     LINK     = "\uf0c1"   # link
     FILE     = "\uf15b"   # file
+    FOLDER   = "\uf07b"   # folder
 
 SECTION_ICONS = {
     "rpm":        _I.PACKAGE,
@@ -1309,8 +1310,10 @@ class Driftify:
         if self.dry_run:
             _dry(f"dnf install -y {' '.join(packages)}")
             return True
+        # --skip-broken works on both dnf4 and dnf5;
+        # --skip-unavailable was dnf4-only and removed in dnf5 (EL10+).
         result = self.run_cmd(
-            ["dnf", "install", "-y", "--skip-unavailable"] + packages,
+            ["dnf", "install", "-y", "--skip-broken"] + packages,
             check=False,
         )
         if result is not None and result.returncode != 0:
