@@ -208,3 +208,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# AI coding assistant directories
+#  Local working state for AI coding assistants used on this project
+#  (Claude Code, Cursor, Continue, Aider, and the superpowers skill
+#  framework). None of it belongs in version control.
+.claude/
+.cursor/
+.continue/
+.aider*
+.superpowers/
