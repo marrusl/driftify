@@ -78,6 +78,41 @@ GHOST_PACKAGE = "words"
 
 GRUB_DEFAULT_PATH = "/etc/default/grub"
 
+# ── Python environment fixtures ──────────────────────────────────────────────
+# inspectah rates a venv "high confidence" only when a requirements.txt sits
+# in the venv's parent directory or the venv root, and only high-confidence
+# venvs render as active Containerfile COPY/RUN lines instead of a
+# commented-out block. Every venv driftify wants rendered gets one.
+
+MYAPP_DIR = "/opt/myapp"
+MYAPP_VENV = f"{MYAPP_DIR}/venv"
+MYAPP_PACKAGES = ["flask", "gunicorn", "requests"]
+MYAPP_REQUIREMENTS_FALLBACK = (
+    "flask==3.0.3\n"
+    "gunicorn==22.0.0\n"
+    "requests==2.32.3\n"
+)
+
+# Legacy app: --system-site-packages plus a requirements.txt. Packages are
+# pure Python so the venv has no .so files, which is the no-C-extension side
+# of inspectah's multi-stage build hint.
+LEGACY_APP_DIR = "/opt/legacy-app"
+LEGACY_APP_VENV = f"{LEGACY_APP_DIR}/venv"
+LEGACY_APP_PACKAGES = ["python-dateutil", "pytz", "six"]
+LEGACY_APP_REQUIREMENTS_FALLBACK = (
+    "python-dateutil==2.9.0.post0\n"
+    "pytz==2024.1\n"
+    "six==1.16.0\n"
+)
+
+# Reporting app: lives outside inspectah's default scan roots (/opt, /srv,
+# /usr/local, /var/www), so it only shows up when the scan adds
+# `--scan-path /apps/reporting`. No requirements.txt — this one stays at
+# medium confidence on purpose.
+REPORTING_DIR = "/apps/reporting"
+REPORTING_VENV = f"{REPORTING_DIR}/venv"
+REPORTING_PACKAGES = ["tabulate", "humanize"]
+
 # Matches dnf repo-metadata download progress lines, e.g.:
 #   "CentOS Stream 9 - BaseOS    3.2 MB/s |  8.1 MB  00:02"
 _DNF_REPO_PAT = re.compile(
@@ -841,6 +876,7 @@ class Driftify:
             sto = "Create /var/lib/myapp/, /var/log/myapp/ dirs"
             if self.needs_profile("standard"):
                 sto += "; add NFS/CIFS entries to /etc/fstab"
+                sto += "; /var/lib/myapp backed by StateDirectory= in myapp.service"
             if self.needs_profile("kitchen-sink"):
                 sto += "; multipath.conf block, LVM thin profile"
             lines.append(sto)
@@ -855,9 +891,12 @@ class Driftify:
 
         if "nonrpm" in active:
             nrpm = "Create Python venv (/opt/myapp/venv) with flask/gunicorn/requests"
+            nrpm += " + requirements.txt"
+            nrpm += f", venv outside the default scan roots ({REPORTING_VENV})"
             nrpm += ", download yq Go binary (/usr/local/bin/driftify-probe)"
             if self.needs_profile("standard"):
                 nrpm += ", npm project (/opt/webapp/), git repo (/opt/tools/some-tool/)"
+                nrpm += f", legacy-app venv ({LEGACY_APP_VENV}, --system-site-packages)"
                 nrpm += ", deploy.sh script"
                 nrpm += ", files in /usr (/usr/bin/custom-tool, /usr/lib/systemd/system/myapp.service, /usr/share/myapp/)"
             if self.needs_profile("kitchen-sink"):
@@ -1042,7 +1081,10 @@ class Driftify:
     def undo_nonrpm(self) -> None:
         _info("Undoing non-RPM software...")
         self._undo_ruby_gems()
-        self._remove_path("/opt/myapp/venv")
+        self._remove_path(MYAPP_VENV)
+        self._remove_path(f"{MYAPP_DIR}/requirements.txt")
+        self._remove_path(LEGACY_APP_DIR)
+        self._remove_path(REPORTING_DIR)
         self._remove_path("/usr/local/bin/driftify-probe")
         self._remove_path("/opt/webapp")
         self._remove_path("/opt/tools/some-tool")
@@ -2893,14 +2935,21 @@ domain=INTERNAL
         self._next_step("nonrpm")
 
         # Minimal: Python venv with flask, gunicorn, requests
-        venv_path = "/opt/myapp/venv"
-        _info(f"{_I.PUZZLE}  Creating Python venv at {venv_path}")
-        self.run_cmd(["python3", "-m", "venv", venv_path], check=False)
+        _info(f"{_I.PUZZLE}  Creating Python venv at {MYAPP_VENV}")
+        self.run_cmd(["python3", "-m", "venv", MYAPP_VENV], check=False)
         self.run_cmd(
-            [f"{venv_path}/bin/pip", "install", "--quiet",
-             "flask", "gunicorn", "requests"],
+            [f"{MYAPP_VENV}/bin/pip", "install", "--quiet", *MYAPP_PACKAGES],
             check=False,
         )
+        # requirements.txt beside the venv is what lifts it to high
+        # confidence, which is what renders active Containerfile lines.
+        self._write_venv_requirements(
+            MYAPP_DIR, MYAPP_VENV, MYAPP_REQUIREMENTS_FALLBACK,
+        )
+
+        # Minimal: venv outside every default scan root — only reachable
+        # with --scan-path
+        self._create_scan_path_venv()
 
         # Minimal: download yq as a real Go binary (gives inspectah a
         # .note.go.buildid ELF section to detect)
@@ -2915,6 +2964,9 @@ domain=INTERNAL
 
             # C-extension .so files in pip site-packages
             self._create_pip_c_extensions()
+
+            # Legacy app venv — --system-site-packages plus a requirements.txt
+            self._create_legacy_app_venv()
 
             # Git-initialised dir with a remote URL
             git_dir = "/opt/tools/some-tool"
@@ -2976,6 +3028,13 @@ domain=INTERNAL
                 "[Service]\n"
                 "Type=simple\n"
                 "ExecStart=/usr/bin/custom-tool\n"
+                # StateDirectory gives /var/lib/myapp a declarative backing.
+                # inspectah's storage inspector greps the unit directories
+                # for StateDirectory=/CacheDirectory=/LogsDirectory= and
+                # classifies the /var dir as StateDirectory-backed rather
+                # than unbacked; without a unit like this, that backing
+                # class has no fixture.
+                "StateDirectory=myapp\n"
                 "Restart=on-failure\n\n"
                 "[Install]\n"
                 "WantedBy=multi-user.target\n",
@@ -3112,12 +3171,70 @@ domain=INTERNAL
             check=False,
         )
 
+    def _write_venv_requirements(self, app_dir: str, venv_path: str,
+                                 fallback: str) -> None:
+        """Write requirements.txt beside a venv, from `pip freeze` when possible.
+
+        `--local` keeps system site-packages out of the listing, which
+        matters for the --system-site-packages venv: without it the file
+        would inventory the host's RPM-installed Python packages too.
+        """
+        result = self.run_cmd(
+            [f"{venv_path}/bin/pip", "freeze", "--local"],
+            check=False, capture=True,
+        )
+        frozen = ""
+        if result is not None and result.returncode == 0:
+            frozen = result.stdout or ""
+        if not frozen.strip():
+            if not self.dry_run:
+                _sub("pip freeze produced nothing — writing static requirements")
+            frozen = fallback
+        self._write_managed_text(f"{app_dir}/requirements.txt", frozen)
+
+    def _create_scan_path_venv(self) -> None:
+        """Create a venv outside inspectah's default scan roots."""
+        _info(f"{_I.PUZZLE}  Creating venv at {REPORTING_VENV} "
+              f"(needs --scan-path {REPORTING_DIR})")
+        self.run_cmd(["python3", "-m", "venv", REPORTING_VENV], check=False)
+        self.run_cmd(
+            [f"{REPORTING_VENV}/bin/pip", "install", "--quiet",
+             *REPORTING_PACKAGES],
+            check=False,
+        )
+
+    def _create_legacy_app_venv(self) -> None:
+        """Create a --system-site-packages venv that has a requirements.txt.
+
+        The kitchen-sink /opt/shared-venv already covers the flag without a
+        manifest; this one pairs the flag with high confidence, which is the
+        combination that renders an active
+        `RUN python3 -m venv --system-site-packages ...` line.
+        """
+        _info(f"{_I.PUZZLE}  Creating legacy-app venv at {LEGACY_APP_VENV}")
+        self.run_cmd(
+            ["python3", "-m", "venv", "--system-site-packages", LEGACY_APP_VENV],
+            check=False,
+        )
+        # --ignore-installed forces the packages into the venv's own
+        # site-packages. Without it pip treats anything already present in
+        # the visible system site-packages as satisfied and installs
+        # nothing, leaving the venv with an empty package inventory.
+        self.run_cmd(
+            [f"{LEGACY_APP_VENV}/bin/pip", "install", "--quiet",
+             "--ignore-installed", *LEGACY_APP_PACKAGES],
+            check=False,
+        )
+        self._write_venv_requirements(
+            LEGACY_APP_DIR, LEGACY_APP_VENV, LEGACY_APP_REQUIREMENTS_FALLBACK,
+        )
+
     def _create_pip_c_extensions(self) -> None:
         """Create C-extension .so files in pip site-packages."""
         _info(f"{_I.PUZZLE}  Creating C-extension fixtures in site-packages")
 
         # Resolve actual site-packages path dynamically
-        venv_base = "/opt/myapp/venv"
+        venv_base = MYAPP_VENV
         import glob
         site_packages_candidates = glob.glob(f"{venv_base}/lib/python3.*/site-packages")
         if not site_packages_candidates:
@@ -4000,9 +4117,11 @@ domain=INTERNAL
 
         # ── Non-RPM ──────────────────────────────────────────────────────────
         if "nonrpm" not in self.skip:
-            nrpm_parts = ["Python venv", "Go binary (yq)"]
+            nrpm_parts = ["Python venv + requirements.txt", "scan-path venv",
+                          "Go binary (yq)"]
             if self.needs_profile("standard"):
-                nrpm_parts += ["npm project", "git repo", "deploy.sh", "3 /usr files"]
+                nrpm_parts += ["npm project", "legacy-app venv", "git repo",
+                               "deploy.sh", "3 /usr files"]
             if self.needs_profile("kitchen-sink"):
                 nrpm_parts += ["ruby + gems", "3 more /usr files"]
             nrpm_str = ", ".join(nrpm_parts)

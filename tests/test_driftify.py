@@ -1126,6 +1126,165 @@ class TestNonRpm(DriftifyTestCase):
             self.assertIn("lodash", pkg)
 
 
+class TestPythonEnvironments(DriftifyTestCase):
+    """Venv fixtures that back inspectah's pip/venv detection.
+
+    inspectah rates a venv "high confidence" only when a requirements.txt
+    sits in the venv's parent directory or the venv root, so the manifest
+    files are as load-bearing as the venvs themselves.
+    """
+
+    def _instrument(self, profile, freeze_stdout="", freeze_rc=0):
+        """Build a drifter that records run_cmd calls and file writes."""
+        d = driftify.Driftify(profile, dry_run=False, skip_sections=[])
+        commands = []
+        files_written = {}
+
+        def patched_run(cmd, check=True, capture=False):
+            commands.append([str(c) for c in cmd])
+            if capture:
+                return subprocess.CompletedProcess(
+                    cmd, freeze_rc, stdout=freeze_stdout, stderr="",
+                )
+            return subprocess.CompletedProcess(cmd, 0)
+
+        d.run_cmd = patched_run
+        d._write_managed_text = (
+            lambda path_str, content, mode=0o644:
+            files_written.__setitem__(path_str, content)
+        )
+        d._ensure_dir = lambda p: None
+        return d, commands, files_written
+
+    def test_myapp_requirements_written_from_pip_freeze(self):
+        frozen = "flask==3.0.3\ngunicorn==22.0.0\nrequests==2.32.3\n"
+        d, commands, files_written = self._instrument("minimal", frozen)
+        d._write_venv_requirements(
+            driftify.MYAPP_DIR, driftify.MYAPP_VENV,
+            driftify.MYAPP_REQUIREMENTS_FALLBACK,
+        )
+        self.assertEqual(files_written["/opt/myapp/requirements.txt"], frozen)
+        self.assertIn(
+            [f"{driftify.MYAPP_VENV}/bin/pip", "freeze", "--local"], commands,
+        )
+
+    def test_requirements_falls_back_when_pip_freeze_is_empty(self):
+        d, _, files_written = self._instrument("minimal", freeze_stdout="")
+        d._write_venv_requirements(
+            driftify.MYAPP_DIR, driftify.MYAPP_VENV,
+            driftify.MYAPP_REQUIREMENTS_FALLBACK,
+        )
+        self.assertEqual(
+            files_written["/opt/myapp/requirements.txt"],
+            driftify.MYAPP_REQUIREMENTS_FALLBACK,
+        )
+
+    def test_requirements_falls_back_when_pip_freeze_fails(self):
+        d, _, files_written = self._instrument(
+            "minimal", freeze_stdout="ignored", freeze_rc=1,
+        )
+        d._write_venv_requirements(
+            driftify.LEGACY_APP_DIR, driftify.LEGACY_APP_VENV,
+            driftify.LEGACY_APP_REQUIREMENTS_FALLBACK,
+        )
+        self.assertEqual(
+            files_written["/opt/legacy-app/requirements.txt"],
+            driftify.LEGACY_APP_REQUIREMENTS_FALLBACK,
+        )
+
+    def test_scan_path_venv_lives_outside_default_scan_roots(self):
+        default_roots = ("/opt/", "/srv/", "/usr/local/", "/var/www/")
+        self.assertFalse(
+            driftify.REPORTING_VENV.startswith(default_roots),
+            f"{driftify.REPORTING_VENV} is inside a default scan root, so it "
+            "would be found without --scan-path",
+        )
+        d, commands, _ = self._instrument("minimal")
+        d._create_scan_path_venv()
+        self.assertIn(
+            ["python3", "-m", "venv", driftify.REPORTING_VENV], commands,
+        )
+
+    def test_legacy_app_venv_uses_system_site_packages(self):
+        d, commands, files_written = self._instrument("standard", "six==1.16.0\n")
+        d._create_legacy_app_venv()
+        self.assertIn(
+            ["python3", "-m", "venv", "--system-site-packages",
+             driftify.LEGACY_APP_VENV],
+            commands,
+        )
+        # requirements.txt beside the venv is what makes this the
+        # high-confidence + system-site-packages combination.
+        self.assertIn("/opt/legacy-app/requirements.txt", files_written)
+
+    def test_legacy_app_install_ignores_system_packages(self):
+        d, commands, _ = self._instrument("standard", "six==1.16.0\n")
+        d._create_legacy_app_venv()
+        install = next(c for c in commands if "install" in c)
+        self.assertIn("--ignore-installed", install)
+        for pkg in driftify.LEGACY_APP_PACKAGES:
+            self.assertIn(pkg, install)
+
+    def test_nonrpm_minimal_creates_both_minimal_venvs(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        d._download_go_probe = lambda: None
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_nonrpm()
+        self._suppress.__enter__()
+        output = buf.getvalue()
+        self.assertIn(driftify.MYAPP_VENV, output)
+        self.assertIn("/opt/myapp/requirements.txt", output)
+        self.assertIn(driftify.REPORTING_VENV, output)
+
+    def test_nonrpm_minimal_does_not_create_legacy_app_venv(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        d._download_go_probe = lambda: None
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d.drift_nonrpm()
+        self._suppress.__enter__()
+        self.assertNotIn(driftify.LEGACY_APP_VENV, buf.getvalue())
+
+    def test_undo_nonrpm_removes_venv_fixtures(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
+        removed = []
+        d._remove_path = removed.append
+        d._undo_ruby_gems = lambda: None
+        d.undo_nonrpm()
+        for path in (driftify.MYAPP_VENV, "/opt/myapp/requirements.txt",
+                     driftify.LEGACY_APP_DIR, driftify.REPORTING_DIR):
+            self.assertIn(path, removed)
+
+    def test_myapp_service_declares_state_directory(self):
+        """/var/lib/myapp needs a StateDirectory= backing to be classified."""
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            files_written = {}
+
+            d._write_managed_text = (
+                lambda path_str, content, mode=0o644:
+                files_written.__setitem__(path_str, content)
+            )
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+            d._download_go_probe = lambda: None
+            d._create_npm_project = lambda: None
+            d._create_npm_globals = lambda: None
+            d._create_pip_c_extensions = lambda: None
+
+            with unittest.mock.patch("os.chmod"):
+                d.drift_nonrpm()
+
+            unit = files_written["/usr/lib/systemd/system/myapp.service"]
+            self.assertIn("StateDirectory=myapp\n", unit)
+            self.assertIn("[Service]", unit)
+
+
 class TestContainers(DriftifyTestCase):
     def test_containers_minimal_drops_webapp_quadlet(self):
         d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])

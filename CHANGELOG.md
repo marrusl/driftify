@@ -6,3 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+
+- **requirements.txt beside the pip venvs** — `/opt/myapp/requirements.txt` (minimal) and `/opt/legacy-app/requirements.txt` (standard) are generated from `pip freeze --local`, with a static pinned fallback. inspectah rates a venv high confidence only when a manifest sits beside it, so without these files no fixture ever produced a high-confidence venv.
+- **Legacy-app venv at `/opt/legacy-app/venv`** (standard) — `--system-site-packages` paired with a requirements.txt and pure-Python packages, covering the system-site-packages flag at high confidence and with no C extensions. The kitchen-sink `/opt/shared-venv` continues to cover the same flag at medium confidence.
+- **Venv at `/apps/reporting/venv`** (minimal) — sits outside every default scan root, so it is only detected when the scan is run with `--scan-path /apps/reporting`.
+- **`StateDirectory=myapp` in `/usr/lib/systemd/system/myapp.service`** (standard) — gives `/var/lib/myapp` a declarative backing, exercising the StateDirectory class of inspectah's /var backing classification.
+
+### Changed
+
+- **`run-fleet-test.sh` scans beyond the default roots** — each scan now passes `--scan-path /apps/reporting` and `--scan-home appuser`, without which the new `/apps` venv and the existing appuser home environments never reach the fleet tarballs.

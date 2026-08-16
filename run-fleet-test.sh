@@ -22,6 +22,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# inspectah scans /opt, /srv, /usr/local and /var/www by default. driftify
+# also plants a venv under /apps/reporting and language environments in
+# appuser's home, so the scan has to be told about both or those fixtures
+# never reach the tarball.
+EXTRA_ROOT_FLAGS=(--scan-path /apps/reporting --scan-home appuser)
+
 SCAN_FLAGS=(--preserve all --ack-sensitive --include-unmanaged --yes)
 AGGREGATE_FLAGS=(--ack-sensitive)
 if $NO_REDACTION; then
@@ -29,6 +35,7 @@ if $NO_REDACTION; then
 elif [[ -n "$PRESERVE" ]]; then
     SCAN_FLAGS=(--preserve "$PRESERVE" --ack-sensitive --include-unmanaged --yes)
 fi
+SCAN_FLAGS+=("${EXTRA_ROOT_FLAGS[@]}")
 
 # Prefer a local binary in cwd; fall back to $PATH.
 if [[ -x "./inspectah" ]]; then

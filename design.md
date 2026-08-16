@@ -197,6 +197,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Create `/etc/auto.master.d/app.autofs` and `/etc/auto.app` | Automount map | kitchen-sink |
 | Create app data dirs under `/var/lib/myapp/`, `/var/log/myapp/` | Application state in /var (data migration plan) | minimal |
 | Create unbacked /var dirs `/var/lib/pgsql`, `/var/lib/myapp`, `/var/cache/myapp` | Unbacked /var directories (tmpfiles.d) | standard |
+| Declare `StateDirectory=myapp` in `/usr/lib/systemd/system/myapp.service` (written by the Non-RPM section) | `/var/lib/myapp` classified as StateDirectory-backed rather than unbacked — the fourth /var backing class alongside tmpfiles.d, RPM-owned, and unbacked | standard |
 | Create mixed-backing /var tree (some fstab, some local) | Mixed /var backing (tmpfiles.d) | kitchen-sink |
 
 ### Scheduled Task Inspector
@@ -341,21 +342,30 @@ This is the most involved section because it needs to exercise multiple detectio
 
 | What driftify does | What inspectah should detect | Profile |
 |---|---|---|
-| Create a Python venv at `/opt/myapp/venv` with pip packages (flask, gunicorn, requests) | pip venv detection, package list capture | minimal |
+| Create a Python venv at `/opt/myapp/venv` with pip packages (flask, gunicorn, requests) plus `/opt/myapp/requirements.txt` | pip venv detection, package list capture, **high confidence** (active Containerfile lines) | minimal |
+| Create a venv at `/apps/reporting/venv` with no `requirements.txt` | Venv outside the default scan roots — found only with `--scan-path /apps/reporting`; medium confidence (commented-out block) | minimal |
 | Install a small npm project at `/opt/webapp/` with `package.json` and `node_modules` | npm project detection, lockfile capture | standard |
 | Install system-level Ruby gems (2–3 gems) | gem detection | standard |
 | Place a small pre-compiled Go binary at `/usr/local/bin/driftify-probe` | Go binary detection (ELF with `.note.go.buildid`) | minimal |
 | Place a small pre-compiled binary with no metadata at `/usr/local/bin/mystery-tool` | Unknown-provenance binary (FIXME) | minimal |
-| Create a venv with `--system-site-packages` at `/opt/legacy-app/venv` | System-site-packages warning | standard |
+| Create a venv with `--system-site-packages` at `/opt/legacy-app/venv`, with a `requirements.txt` and pure-Python packages | System-site-packages **at high confidence** — active `RUN python3 -m venv --system-site-packages ...`, and no C-extension hint | standard |
+| Create a venv with `--system-site-packages` at `/opt/shared-venv`, no `requirements.txt` | System-site-packages at medium confidence — commented-out block carrying the same flag | kitchen-sink |
+| Create a venv at `/var/www/django-app/venv` and one at `/home/appuser/.local/venv` | Venv under a default scan root vs. one needing `--scan-home appuser` | kitchen-sink |
 | Create a git-cloned directory at `/opt/tools/some-tool/` with `.git` | Git-managed directory with remote URL | standard |
 | Place a shell script with a shebang at `/usr/local/bin/deploy.sh` | Script detection (non-binary) | standard |
-| Place pip packages with `.so` files (e.g., numpy) in a venv | C extension detection → multi-stage build hint | kitchen-sink |
+| Place pip packages with `.so` files (e.g., numpy) in `/opt/myapp/venv` | C extension detection → multi-stage build hint | standard |
 | Place custom tool at `/usr/bin/custom-tool` | Non-RPM binary in /usr (files in /usr) | standard |
 | Place systemd unit at `/usr/lib/systemd/system/myapp.service` | Non-RPM systemd unit in /usr (files in /usr) | standard |
 | Place app files at `/usr/share/myapp/` | Non-RPM share files in /usr (files in /usr) | standard |
 | Place daemon at `/usr/sbin/custom-daemon` | Non-RPM sbin binary in /usr (files in /usr) | kitchen-sink |
 | Place library at `/usr/lib64/libcustom.so` | Non-RPM library in /usr (files in /usr) | kitchen-sink |
 | Place helper at `/usr/libexec/myapp-helper` | Non-RPM libexec binary in /usr (files in /usr) | kitchen-sink |
+
+**Venv confidence tiers:**
+
+inspectah rates a venv `high` only when it finds a `requirements.txt` in the venv's parent directory or the venv root; otherwise it is `medium`. A fixture set with no `requirements.txt` anywhere therefore never produces a high-confidence venv, no matter how many venvs it contains, and the tier drives what inspectah does with the finding downstream. driftify writes `requirements.txt` from `pip freeze --local` after installing, falling back to a static pinned list when pip produces nothing, so the manifest always matches what is actually in the venv.
+
+The venv fixtures are laid out to cover each distinction inspectah draws: high vs. medium confidence, `system_site_packages` true vs. false, C extensions present vs. absent, and default scan root vs. `--scan-path` / `--scan-home` expansion.
 
 **Binary provisioning:**
 
@@ -573,6 +583,8 @@ Examples:
 2. After each profile, runs `inspectah scan` with a unique `INSPECTAH_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
 3. Aggregates the three host tarballs into a fleet tarball using `inspectah fleet aggregate`.
 
+Each scan adds `--scan-path /apps/reporting` and `--scan-home appuser` to inspectah's default roots. Without them the `/apps/reporting` venv and appuser's home language environments never reach the tarballs, so the fixtures would be silently missing the scan-expansion cases.
+
 **Usage:**
 
 ```bash
@@ -601,7 +613,7 @@ Network Inspector:    3 firewall rules, 1 custom zone, 2 hosts entries, 1 proxy
 Storage Inspector:    2 fstab entries, 3 /var directories
 Scheduled Tasks:      2 cron jobs, 1 timer, 1 at job, 1 per-user crontab
 Container Inspector:  2 quadlet units, 1 compose file
-Non-RPM Software:     1 pip venv (3 packages), 1 npm project, 1 Go binary, 1 mystery binary
+Non-RPM Software:     3 pip venvs (2 with requirements.txt), 1 npm project, 1 Go binary, 1 mystery binary
 Kernel/Boot:          6 sysctl overrides, 1 module, 1 dracut config
 SELinux/Security:     2 booleans, 1 audit rule file
 Users/Groups:         2 users, 1 group, 1 sudoers rule, 1 SSH key
@@ -675,6 +687,10 @@ Everything driftify creates, so you can audit it at a glance:
 /etc/hosts                                        # Modified (entries added)
 /opt/myapp/                                       # Application directory
 /opt/myapp/venv/                                  # Python venv
+/opt/myapp/requirements.txt                      # pip manifest (lifts the venv to high confidence)
+/opt/legacy-app/venv/                             # --system-site-packages venv (standard+)
+/opt/legacy-app/requirements.txt                 # pip manifest for the legacy-app venv (standard+)
+/apps/reporting/venv/                             # Venv outside the default scan roots (needs --scan-path)
 /opt/myapp/docker-compose.yml                    # Compose file (standard+)
 /opt/myapp/.env                                   # Env file with fake secrets
 /opt/webapp/                                      # npm project (standard+)
