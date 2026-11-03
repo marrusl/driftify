@@ -580,7 +580,7 @@ Examples:
 **What it does:**
 
 1. Runs driftify with all three profiles in sequence (minimal, standard, kitchen-sink).
-2. After each profile, runs `inspectah scan` with a unique `INSPECTAH_HOSTNAME` (web-01, web-02, web-03) so each tarball appears to come from a different host.
+2. After each profile, sets the machine's hostname to a unique value (web-01, web-02, web-03) with `hostnamectl` and runs `inspectah scan`, so each tarball appears to come from a different host. The original hostname is restored after the last scan, and by an `EXIT` trap if the run stops early.
 3. Aggregates the three host tarballs into a fleet tarball using `inspectah fleet aggregate`.
 
 Each scan adds `--scan-path /apps/reporting` and `--scan-home appuser` to inspectah's default roots. Without them the `/apps/reporting` venv and appuser's home language environments never reach the tarballs, so the fixtures would be silently missing the scan-expansion cases.
