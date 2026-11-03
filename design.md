@@ -581,7 +581,7 @@ Examples:
 
 1. Runs driftify with all three profiles in sequence (minimal, standard, kitchen-sink).
 2. After each profile, sets the machine's hostname to a unique value (web-01, web-02, web-03) with `hostnamectl` and runs `inspectah scan`, so each tarball appears to come from a different host. The original hostname is restored after the last scan, and by an `EXIT` trap if the run stops early.
-3. Aggregates the three host tarballs into a fleet tarball using `inspectah fleet aggregate`.
+3. Aggregates the three host tarballs into a fleet tarball using `inspectah aggregate`.
 
 Each scan adds `--scan-path /apps/reporting` and `--scan-home appuser` to inspectah's default roots. Without them the `/apps/reporting` venv and appuser's home language environments never reach the tarballs, so the fixtures would be silently missing the scan-expansion cases.
 
@@ -635,7 +635,7 @@ This summary directly maps to what inspectah should find. During development, yo
 
 **driftify does not test version-specific edge cases exhaustively.** It works on both RHEL/CentOS 9 and 10 by adapting to the detected version, but it doesn't maintain separate coverage maps per version. If a inspectah detection path is version-specific, that should be tested in inspectah's own test suite with version-pinned fixtures.
 
-**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `inspectah fleet aggregate`. See the Fleet Testing section below.
+**driftify is a single-host tool.** It applies drift to one system at a time. However, `run-fleet-test.sh` orchestrates multi-host fleet testing by running driftify with all three profiles on the same VM, capturing each run under a unique hostname, and aggregating the results with `inspectah aggregate`. See the Fleet Testing section below.
 
 ## Dependencies
 
