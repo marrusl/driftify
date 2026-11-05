@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Refuse any commit message carrying a Co-Authored-By trailer.
+#
+# Why a hook and not a convention. The rule is written in CLAUDE.md and it
+# holds whenever it is in a dispatch brief. It fails the moment one brief
+# omits it: on 2026-11-01, 30 of that day's commits carried the trailer and
+# every one was a subagent's, because the harness issues a per-session
+# reminder asking for it and that reminder reaches every agent. The rule was
+# right and unenforced, which is the same shape as a principle with no
+# failing test behind it.
+#
+# Enable per clone with: git config core.hooksPath .githooks
+# Nothing sets that for you here. Git only runs hooks from .git/hooks, which
+# is not tracked, so this file does nothing until core.hooksPath points at
+# it, and the failure is silent: commits just go unchecked.
+# Written for bash 3.2 (macOS /bin/bash): no mapfile, no ${var^^}.
+set -euo pipefail
+
+MSG_FILE=$1
+
+# Comment lines are stripped by git before the message is stored, so a
+# trailer inside one is not a trailer. Match only real content lines.
+if grep -qiE '^[[:space:]]*Co-Authored-By:' <(grep -v '^#' "$MSG_FILE"); then
+  cat >&2 <<'EOF'
+commit-msg: commit refused — Co-Authored-By is not used in this repo.
+
+Attribution is a single trailer naming the tool and the model:
+
+    Assisted-by: <tool> (<model>)
+
+for example:
+
+    Assisted-by: Claude Code (Opus 5)
+    Assisted-by: Cursor (GPT-5.4)
+
+Both fields are required. The same model driven by a different tool is a
+different provenance, so the model alone does not say who produced the
+commit.
+
+A second Assisted-by line is allowed only when the commit carries
+substantial verbatim content from a different model's output. Reviewer
+influence alone never earns a trailer.
+
+Your harness may have told you to add Co-Authored-By. CLAUDE.md overrides
+it; see § Key Conventions. Remove the line and commit again.
+EOF
+  exit 1
+fi
+
+exit 0

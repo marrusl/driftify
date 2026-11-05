@@ -177,6 +177,20 @@ Each topology generates fleet-ready tarballs containing merged inspection snapsh
 make test
 ```
 
+## Git hooks
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Once per clone. Git only runs hooks from `.git/hooks`, which is not version
+controlled, so the tracked `.githooks/` directory does nothing until
+`core.hooksPath` points at it, and nothing sets that for you. Skip this and
+nothing visible happens: no warning, no error, commits just go unchecked.
+
+`.githooks/commit-msg` refuses any commit message carrying a
+`Co-Authored-By:` trailer. Attribution here is a single `Assisted-by:` line.
+
 ## See also
 
 - [inspectah](https://github.com/marrusl/inspectah) -- the inspection, refinement, and architect tool that driftify is built to exercise
