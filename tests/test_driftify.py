@@ -1453,6 +1453,75 @@ class TestSshdConfigNoPortMove(DriftifyTestCase):
                         self.assertNotIn(port, text)
 
 
+class TestSshdPermitRootLoginDropin(DriftifyTestCase):
+    """standard also writes PermitRootLogin no as an early sshd drop-in.
+
+    The stock RHEL 9 sshd_config includes sshd_config.d/*.conf before its own
+    directives and sshd keeps the first value it reads, so an installer-written
+    01-permitrootlogin.conf would otherwise win over driftify's sshd_config line.
+    """
+
+    STOCK_DROPINS = ("01-permitrootlogin.conf", "50-redhat.conf")
+
+    def _writes(self, profile):
+        d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+        d._t0 = driftify.time.monotonic()
+        writes = []
+        d._write_managed_text = (
+            lambda path_str, content, mode=0o644:
+            writes.append((path_str, content, mode))
+        )
+        d._apply_directives = lambda path_str, mapping: None
+        d._append_managed_block = lambda *a, **kw: None
+        d.run_cmd = lambda cmd, check=True, capture=False: None
+        self._suppress.__exit__(None, None, None)
+        with redirect_stdout(io.StringIO()):
+            d.drift_config()
+        self._suppress.__enter__()
+        return {path: (content, mode) for path, content, mode in writes}
+
+    def test_dropin_path_sorts_before_stock_dropins(self):
+        path = driftify.SSHD_DRIFTIFY_DROPIN
+        self.assertTrue(path.startswith("/etc/ssh/sshd_config.d/"))
+        self.assertTrue(path.endswith(".conf"))
+        name = path.rsplit("/", 1)[1]
+        for stock in self.STOCK_DROPINS:
+            self.assertLess(name, stock)
+
+    def test_standard_writes_dropin_with_directive_and_mode(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                writes = self._writes(profile)
+                self.assertIn(driftify.SSHD_DRIFTIFY_DROPIN, writes)
+                content, mode = writes[driftify.SSHD_DRIFTIFY_DROPIN]
+                live = [l for l in content.splitlines()
+                        if l.strip() and not l.lstrip().startswith("#")]
+                self.assertEqual(live, ["PermitRootLogin no"])
+                comments = [l for l in content.splitlines() if l.startswith("#")]
+                self.assertEqual(len(comments), 1)
+                self.assertIn("driftify", comments[0])
+                self.assertEqual(mode, 0o600)
+
+    def test_minimal_writes_no_dropin(self):
+        self.assertNotIn(driftify.SSHD_DRIFTIFY_DROPIN, self._writes("minimal"))
+
+    def test_plan_and_summary_name_both_files(self):
+        d = driftify.Driftify("standard", dry_run=True, skip_sections=[])
+        d._t0 = driftify.time.monotonic()
+        plan = "\n".join(d._run_description())
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            d._print_summary()
+        self._suppress.__enter__()
+        for text in (plan, buf.getvalue()):
+            with self.subTest(text=text[:40]):
+                self.assertIn("sshd_config", text)
+                self.assertIn(driftify.SSHD_DRIFTIFY_DROPIN, text)
+                self.assertIn("PermitRootLogin", text)
+                self.assertIn("restart", text)
+
+
 class TestNginxPortLabel(DriftifyTestCase):
     """standard moves nginx to a custom port with an http_port_t label.
 

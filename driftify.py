@@ -88,6 +88,14 @@ NGINX_DRIFT_PORT = 8081
 # Listen 8080 and nginx's own stock server on 80.
 NGINX_MINIMAL_PORT = 81
 
+# standard writes PermitRootLogin no here as well as in sshd_config. The stock
+# sshd_config includes sshd_config.d/*.conf before its own directives and sshd
+# keeps the first value it reads, so on a host whose installer wrote
+# 01-permitrootlogin.conf the sshd_config line alone is ignored. 00- sorts
+# before every stock drop-in. Mode matches the stock drop-ins (0600 on RHEL 9).
+SSHD_DRIFTIFY_DROPIN = "/etc/ssh/sshd_config.d/00-driftify.conf"
+SSHD_DROPIN_MODE = 0o600
+
 # ── Python environment fixtures ──────────────────────────────────────────────
 # inspectah rates a venv "high confidence" only when a requirements.txt sits
 # in the venv's parent directory or the venv root, and only high-confidence
@@ -867,8 +875,9 @@ class Driftify:
             lines.append(cfgs)
             if self.needs_profile("standard"):
                 lines.append(
-                    f"{_I.WARN}  sshd_config will be modified: PermitRootLogin \u2192 no; "
-                    "takes effect on next sshd restart or reboot"
+                    f"{_I.WARN}  PermitRootLogin \u2192 no in sshd_config and in an early "
+                    f"drop-in, {SSHD_DRIFTIFY_DROPIN}, so sshd enforces it "
+                    "from its next restart or reboot"
                 )
             if self.needs_profile("kitchen-sink"):
                 lines.append(
@@ -1502,6 +1511,12 @@ log_level = info
             self._apply_directives("/etc/ssh/sshd_config", {
                 "PermitRootLogin": "PermitRootLogin no",
             })
+            self._write_managed_text(
+                SSHD_DRIFTIFY_DROPIN,
+                "# Written by driftify: disables root login ahead of other drop-ins\n"
+                "PermitRootLogin no\n",
+                mode=SSHD_DROPIN_MODE,
+            )
             self._append_managed_block(
                 "/etc/chrony.conf",
                 "chrony-servers",
@@ -3780,9 +3795,9 @@ domain=INTERNAL
 
         if "config" not in self.skip and self.needs_profile("standard"):
             print()
-            _warn("WARNING: sshd_config was modified \u2014 "
-                  "PermitRootLogin set to no.")
-            _warn("         Changes take effect on next sshd restart or reboot.")
+            _warn("WARNING: PermitRootLogin no was written to sshd_config and to "
+                  f"the early drop-in {SSHD_DRIFTIFY_DROPIN}.")
+            _warn("         sshd enforces it from its next restart or reboot.")
         if "config" not in self.skip and self.needs_profile("kitchen-sink"):
             _warn("         Kitchen-sink: Ciphers, MACs, KexAlgorithms "
                   "also overridden.")

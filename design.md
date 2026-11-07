@@ -170,6 +170,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Drop `/etc/logrotate.d/myapp` with rotation config | Unowned config in logrotate.d | standard |
 | Drop `/etc/cron.d/` job files (see Scheduled Tasks) | Unowned config in cron.d | standard |
 | Drop `/etc/sudoers.d/appusers` (see Users) | Unowned config in sudoers.d | standard |
+| Drop `/etc/ssh/sshd_config.d/00-driftify.conf` with `PermitRootLogin no`, so the `sshd_config` change above is enforced even where an installer drop-in sets root login first | Unowned config in sshd_config.d | standard |
 
 #### Orphaned configs from removed packages
 
@@ -688,6 +689,7 @@ Everything driftify creates, so you can audit it at a glance:
 /etc/NetworkManager/system-connections/mgmt.nmconnection  # Static NM profile
 /etc/firewalld/zones/myapp.xml                   # Custom firewall zone
 /etc/hosts                                        # Modified (entries added)
+/etc/ssh/sshd_config.d/00-driftify.conf          # PermitRootLogin no, read before stock drop-ins (standard+)
 /opt/myapp/                                       # Application directory
 /opt/myapp/venv/                                  # Python venv
 /opt/myapp/requirements.txt                      # pip manifest (lifts the venv to high confidence)
