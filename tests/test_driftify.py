@@ -1579,6 +1579,103 @@ class TestSshdConfigNoPortMove(DriftifyTestCase):
                         self.assertNotIn(port, text)
 
 
+class TestNginxPortLabel(DriftifyTestCase):
+    """standard moves nginx to a custom port with an http_port_t label.
+
+    This is driftify's SELinux port label drift: inspectah has to detect the
+    custom label and render a `semanage port` line in the Containerfile.
+    """
+
+    NGINX_CONF = "/etc/nginx/nginx.conf"
+    BLOCK = "nginx-server-block"
+    LABEL_ADD = ["semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", "8081"]
+    LABEL_DEL = ["semanage", "port", "-d", "-t", "http_port_t", "-p", "tcp", "8081"]
+
+    def _run(self, profile, method, semanage="/usr/sbin/semanage"):
+        d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+        d._t0 = driftify.time.monotonic()
+        blocks = []
+        commands = []
+        d._append_managed_block = (
+            lambda path_str, marker, block, **kw:
+            blocks.append((path_str, marker, block))
+        )
+        d.run_cmd = (
+            lambda cmd, check=True, capture=False:
+            commands.append([str(c) for c in cmd])
+        )
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf), \
+             unittest.mock.patch("shutil.which", return_value=semanage):
+            getattr(d, method)()
+        self._suppress.__enter__()
+        return blocks, commands, buf.getvalue()
+
+    def _nginx_block(self, blocks):
+        found = [b for p, m, b in blocks if p == self.NGINX_CONF and m == self.BLOCK]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def test_drift_port_constant(self):
+        self.assertEqual(driftify.NGINX_DRIFT_PORT, 8081)
+
+    def test_standard_nginx_listens_on_8081_with_label(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                blocks, commands, _ = self._run(profile, "drift_config")
+                block = self._nginx_block(blocks)
+                self.assertIn("listen 8081 default_server;", block)
+                self.assertNotIn("listen 8080", block)
+                self.assertIn(self.LABEL_ADD, commands)
+
+    def test_minimal_nginx_keeps_stock_labelled_port(self):
+        blocks, commands, _ = self._run("minimal", "drift_config")
+        self.assertIn("listen 8080 default_server;", self._nginx_block(blocks))
+        self.assertFalse(any("http_port_t" in c for c in commands))
+
+    def test_label_skipped_with_warning_without_semanage(self):
+        _, commands, out = self._run("standard", "drift_config", semanage=None)
+        self.assertFalse(any("http_port_t" in c for c in commands))
+        self.assertIn("semanage not found", out)
+
+    def test_standard_opens_8081_in_firewalld(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                _, commands, _ = self._run(profile, "drift_network")
+                self.assertIn(
+                    ["firewall-cmd", "--permanent", "--add-port=8081/tcp"], commands)
+        _, commands, _ = self._run("minimal", "drift_network")
+        self.assertNotIn(
+            ["firewall-cmd", "--permanent", "--add-port=8081/tcp"], commands)
+
+    def test_undo_removes_label_and_firewall_opening(self):
+        _, commands, _ = self._run("minimal", "undo_config")
+        self.assertIn(self.LABEL_DEL, commands)
+        _, commands, _ = self._run("minimal", "undo_network")
+        self.assertIn(
+            ["firewall-cmd", "--permanent", "--remove-port=8081/tcp"], commands)
+        self.assertEqual(commands[-1], ["firewall-cmd", "--reload"])
+
+    def test_plan_and_summary_mention_nginx_port(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+                d._t0 = driftify.time.monotonic()
+                plan = "\n".join(d._run_description())
+                self.assertIn("nginx listen→8081", plan)
+                self.assertIn("http_port_t", plan)
+                self.assertIn("8081/tcp", plan)
+                self._suppress.__exit__(None, None, None)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    d._print_summary()
+                self._suppress.__enter__()
+                self.assertIn("nginx on 8081 (http_port_t label)", buf.getvalue())
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        self.assertNotIn("8081", "\n".join(d._run_description()))
+
+
 class TestFedoraSupport(DriftifyTestCase):
     """Verify Fedora-specific behavior: RPM Fusion, no EPEL, package filtering."""
 

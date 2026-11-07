@@ -78,6 +78,11 @@ GHOST_PACKAGE = "words"
 
 GRUB_DEFAULT_PATH = "/etc/default/grub"
 
+# standard moves nginx's managed server block to this port and labels it
+# http_port_t. It is not in the stock http_port_t set, so the label is a
+# custom SELinux port label for inspectah to render as `semanage port`.
+NGINX_DRIFT_PORT = 8081
+
 # ── Python environment fixtures ──────────────────────────────────────────────
 # inspectah rates a venv "high confidence" only when a requirements.txt sits
 # in the venv's parent directory or the venv root, and only high-confidence
@@ -829,6 +834,7 @@ class Driftify:
             cfgs += "; modify RPM-owned configs (httpd, nginx"
             if self.needs_profile("standard"):
                 cfgs += (
+                    f", nginx listen\u2192{NGINX_DRIFT_PORT} + http_port_t label"
                     ", sshd PermitRootLogin, chrony; create /etc/myapp/database.conf"
                     "; nsswitch +sss, SSSD/Kerberos, alternatives python3"
                     "; IPA certs, keytabs, SSSD cache"
@@ -863,7 +869,10 @@ class Driftify:
                 )
 
         if "network" in active:
-            net = "Add firewall rules (http, https, 8080/tcp), /etc/hosts entries"
+            fw = "http, https, 8080/tcp"
+            if self.needs_profile("standard"):
+                fw += f", {NGINX_DRIFT_PORT}/tcp"
+            net = f"Add firewall rules ({fw}), /etc/hosts entries"
             if self.needs_profile("standard"):
                 net += ", NM profile, proxy, ifcfg-eth1"
             if self.needs_profile("kitchen-sink"):
@@ -1175,10 +1184,11 @@ class Driftify:
                 ["firewall-cmd", "--permanent", f"--remove-service={svc}"],
                 check=False,
             )
-        self.run_cmd(
-            ["firewall-cmd", "--permanent", "--remove-port=8080/tcp"],
-            check=False,
-        )
+        for port in ("8080/tcp", f"{NGINX_DRIFT_PORT}/tcp"):
+            self.run_cmd(
+                ["firewall-cmd", "--permanent", f"--remove-port={port}"],
+                check=False,
+            )
         self.run_cmd(["firewall-cmd", "--reload"], check=False)
         self._remove_managed_block("/etc/hosts", "hosts-entries")
         self._remove_path("/etc/firewalld/zones/myapp.xml")
@@ -1195,6 +1205,12 @@ class Driftify:
         self._undo_alternatives()
         self._undo_sssd_kerberos()
         self._remove_managed_block("/etc/nginx/nginx.conf", "nginx-server-block")
+        if self._check_command("semanage"):
+            self.run_cmd(
+                ["semanage", "port", "-d", "-t", "http_port_t", "-p", "tcp",
+                 str(NGINX_DRIFT_PORT)],
+                check=False,
+            )
         self._remove_managed_block("/etc/chrony.conf", "chrony-servers")
         self._remove_managed_block("/etc/chrony.conf", "chrony-servers-ks")
         self._remove_managed_block("/etc/httpd/conf/httpd.conf", "httpd-ks")
@@ -1718,18 +1734,29 @@ class Driftify:
         self._apply_directives("/etc/nginx/nginx.conf", {
             "worker_processes": "worker_processes 2;",
         })
+        # standard moves nginx to a port outside the stock http_port_t set,
+        # which needs a custom SELinux port label; minimal stays on 8080.
+        nginx_port = NGINX_DRIFT_PORT if self.needs_profile("standard") else 8080
         self._append_managed_block(
             "/etc/nginx/nginx.conf",
             "nginx-server-block",
-            """server {
-    listen 8080 default_server;
+            f"""server {{
+    listen {nginx_port} default_server;
     server_name _;
-    location / {
+    location / {{
         return 200 "driftify nginx config drift\\n";
-    }
-}""",
+    }}
+}}""",
             create_if_missing=False,
         )
+        if self.needs_profile("standard") and self._check_command("semanage"):
+            _info(f"{_I.SHIELD}  Adding http_port_t SELinux label for port "
+                  f"{NGINX_DRIFT_PORT}")
+            self.run_cmd(
+                ["semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp",
+                 str(NGINX_DRIFT_PORT)],
+                check=False,
+            )
 
         # Minimal: unowned configs in /etc
         self._ensure_dir(Path("/etc/myapp"))
@@ -2192,6 +2219,8 @@ MONGODB_URL=mongodb://admin:m0ng0pass@mongo.internal:27017/admin
         # Minimal: firewalld allowances
         fw_services = ["http", "https"]
         fw_ports = ["8080/tcp"]
+        if self.needs_profile("standard"):
+            fw_ports.append(f"{NGINX_DRIFT_PORT}/tcp")
         _info(f"{_I.GLOBE}  Adding firewalld rules "
               f"({', '.join(fw_services + fw_ports)})")
         for svc in fw_services:
@@ -3998,6 +4027,7 @@ domain=INTERNAL
             ]
             if self.needs_profile("standard"):
                 cfg_parts += [
+                    f"nginx on {NGINX_DRIFT_PORT} (http_port_t label)",
                     "nsswitch +sss", "SSSD/Kerberos", "alternatives python3",
                     "auth/identity (IPA certs, keytabs, PAM, authselect)",
                     "tmpfiles.d (2 entries)", "logging/monitoring (rsyslog, journald)",
@@ -4016,7 +4046,8 @@ domain=INTERNAL
 
         # ── Network ──────────────────────────────────────────────────────────
         if "network" not in self.skip:
-            net_parts = ["3 firewall rules", "hosts entries"]
+            fw_rules = 4 if self.needs_profile("standard") else 3
+            net_parts = [f"{fw_rules} firewall rules", "hosts entries"]
             if self.needs_profile("standard"):
                 net_parts += ["zone", "NM profile", "proxy", "ifcfg-eth1"]
             net_str = ", ".join(net_parts)

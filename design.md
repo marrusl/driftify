@@ -128,6 +128,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 |---|---|---|
 | Modify `/etc/httpd/conf/httpd.conf` — change `Listen`, `ServerName`, `MaxRequestWorkers` | Modified RPM-owned config (triggers `rpm -Va`) | minimal |
 | Modify `/etc/nginx/nginx.conf` — change `worker_processes`, add `server` block | Modified RPM-owned config | minimal |
+| Move the nginx `server` block from `listen 8080` to `listen 8081` | Modified RPM-owned config, paired with a custom SELinux port label | standard |
 | Modify `/etc/ssh/sshd_config` — disable root login; kitchen-sink also overrides ciphers, MACs, and kex | Modified RPM-owned config (security-relevant) | standard |
 | Modify `/etc/chrony.conf` — add NTP servers | Modified RPM-owned config | standard |
 | Modify `/etc/security/limits.conf` — add nofile limits | Modified RPM-owned config | kitchen-sink |
@@ -181,6 +182,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | What driftify does | What inspectah should detect | Profile |
 |---|---|---|
 | Add firewalld service allowances (http, https, 8080/tcp) | Non-default firewall rules | minimal |
+| Open 8081/tcp in firewalld for nginx | Non-default firewall port | standard |
 | Add custom firewalld zone XML | Custom zone definition | standard |
 | Add entries to `/etc/hosts` | Non-default hosts entries | minimal |
 | Drop a static NM connection profile in `/etc/NetworkManager/system-connections/` | Static NM profile (bake-into-image candidate) | standard |
@@ -433,6 +435,7 @@ EL8 support ensures driftify can run on RHEL/CentOS Stream 8 systems by detectin
 |---|---|---|
 | `setsebool -P httpd_can_network_connect on` | Non-default SELinux boolean | minimal |
 | `setsebool -P httpd_can_network_relay on` | Second non-default boolean | standard |
+| `semanage port -a -t http_port_t -p tcp 8081` for nginx | Custom SELinux port label, rendered as a `semanage port` line | standard |
 | Drop custom audit rules in `/etc/audit/rules.d/driftify.rules` | Custom audit rules | standard |
 | Create and install a custom SELinux policy module | Custom policy module at priority 400 | kitchen-sink |
 
@@ -609,13 +612,13 @@ After driftify completes, it prints a summary showing what was created for each 
 RPM Inspector:        14 packages installed, 1 repo added, 1 ghost package
 Service Inspector:    2 enabled, 1 disabled, 1 masked
 Config Inspector:     4 RPM configs modified, 6 unowned files placed, 1 orphan
-Network Inspector:    3 firewall rules, 1 custom zone, 2 hosts entries, 1 proxy
+Network Inspector:    4 firewall rules, 1 custom zone, 2 hosts entries, 1 proxy
 Storage Inspector:    2 fstab entries, 3 /var directories
 Scheduled Tasks:      2 cron jobs, 1 timer, 1 at job, 1 per-user crontab
 Container Inspector:  2 quadlet units, 1 compose file
 Non-RPM Software:     3 pip venvs (2 with requirements.txt), 1 npm project, 1 Go binary, 1 mystery binary
 Kernel/Boot:          6 sysctl overrides, 1 module, 1 dracut config
-SELinux/Security:     2 booleans, 1 audit rule file
+SELinux/Security:     2 booleans, 1 port label, 1 audit rule file
 Users/Groups:         2 users, 1 group, 1 sudoers rule, 1 SSH key
 Secrets:              6 fake credentials planted
 
@@ -726,9 +729,10 @@ Services masked: bluetooth (standard+, if present)
 Drop-in overrides: httpd (standard+), nginx (kitchen-sink)
 SELinux booleans: httpd_can_network_connect=on, httpd_can_network_relay=on (standard+)
 SELinux modules: myapp (kitchen-sink)
+SELinux port labels: 8081/tcp http_port_t for nginx (standard+)
 Users: appuser (1001), dbuser (1002, standard+)
 Groups: appgroup (1001), developers (1050, standard+)
-Firewall: http, https, 8080/tcp added to default zone
+Firewall: http, https, 8080/tcp added to default zone; 8081/tcp (standard+)
 Sysctls: 6 values applied
 Modules: br_netfilter loaded (standard+)
 ```
