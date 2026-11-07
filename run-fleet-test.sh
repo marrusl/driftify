@@ -4,18 +4,15 @@
 # Self-contained: fetches driftify from GitHub; no local checkout required.
 #
 # Flags:
-#   --no-undo                  Skip undoing previous driftify state (for fresh VMs)
 #   --no-redaction             Skip redaction entirely (implies --ack-sensitive)
 #   --preserve ITEMS           Preserve specific sensitive data: password-hashes,
 #                              ssh-keys, subscription, all (implies --ack-sensitive)
 set -euo pipefail
 
-NO_UNDO=false
 NO_REDACTION=false
 PRESERVE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-undo) NO_UNDO=true; shift ;;
         --no-redaction) NO_REDACTION=true; shift ;;
         --preserve) PRESERVE="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -66,11 +63,8 @@ else
 fi
 trap 'sudo hostnamectl set-hostname "$ORIGINAL_HOSTNAME" 2>/dev/null; $DRIFTIFY_FETCHED && rm -f "$DRIFTIFY_SCRIPT"; rm -rf "$FLEET_DIR"' EXIT
 
-# Start from a clean slate (undo any previous driftify run)
-if ! $NO_UNDO; then
-    echo "=== Undoing previous driftify state ==="
-    sudo "$DRIFTIFY_SCRIPT" --undo -yq
-fi
+# The host must be a fresh or reverted VM: driftify cannot restore it, and
+# the three profiles below accumulate on this one host by design.
 
 for i in "${!PROFILES[@]}"; do
     profile="${PROFILES[$i]}"

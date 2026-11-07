@@ -46,9 +46,9 @@ sudo ./driftify.py --profile kitchen-sink   # everything
 sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
 sudo ./driftify.py --dry-run                # preview without changes
 sudo ./driftify.py --run-inspectah             # apply drift then run inspectah
-sudo ./driftify.py --undo                   # reverse a previous driftify run
-sudo ./driftify.py --undo-first             # reverse previous run, then apply drift
 ```
+
+Run driftify on a throwaway VM. Reverting the VM snapshot is how you get a clean host back.
 
 ## CLI reference
 
@@ -59,8 +59,6 @@ sudo ./driftify.py --undo-first             # reverse previous run, then apply d
 | `--profile PROFILE` | `minimal`, `standard` (default), or `kitchen-sink` |
 | `--skip-SECTION` | Skip a section (e.g. `--skip-rpm`, `--skip-services`, `--skip-nonrpm`) |
 | `--dry-run` | Print commands without executing them |
-| `--undo` | Reverse a previous driftify run and exit |
-| `--undo-first` | Reverse previous run, then apply drift normally |
 | `-y`, `--yes` | Skip interactive confirmation prompt |
 | `-q`, `--quiet` | Show only section banners, warnings, and errors |
 | `--verbose` | Reserved for future use |
@@ -125,7 +123,7 @@ For per-profile breakdowns of each section, see [docs/coverage-detail.md](docs/c
 - **Profiles** -- minimal for CI, standard for demos, kitchen-sink for stress testing.
 - **Per-section skip flags** -- `--skip-SECTION` to leave individual categories untouched.
 - **Dry-run mode** -- `--dry-run` prints every command without executing anything.
-- **Undo support** -- `--undo` reverses a previous run; `--undo-first` reverses then reapplies.
+- **Snapshot restore** -- built for throwaway VMs; revert the VM snapshot to get a clean host back.
 - **Run record** -- writes `/etc/driftify.stamp` on completion with profile, OS, and timestamps.
 - **OS auto-detection** -- reads `/etc/os-release` to adapt for EL9, EL10, and Fedora.
 - **Idempotent** -- safe to run twice without breaking the system.

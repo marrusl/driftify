@@ -655,22 +655,6 @@ class Driftify:
         path.mkdir(parents=True, exist_ok=True)
         _info(f"Created dir {path}")
 
-    def _remove_path(self, path_str: str) -> None:
-        """Remove a file or directory tree, no-op if absent."""
-        import shutil
-        path = Path(path_str)
-        if not path.exists():
-            return
-        if self.dry_run:
-            kind = "rm -rf" if path.is_dir() else "rm"
-            _dry(f"{kind} {path}")
-            return
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            path.unlink(missing_ok=True)
-        _info(f"Removed {path}")
-
     def _user_exists(self, username: str) -> bool:
         """Check if a user exists on the system (silent probe)."""
         if self.dry_run:
@@ -796,41 +780,6 @@ class Driftify:
             prefix += "\n"
 
         self._write_managed_text(path_str, prefix + wrapped, mode=mode)
-
-    def _remove_managed_block(self, path_str: str, marker: str) -> None:
-        """Remove a driftify-managed block from a file (counterpart to _append_managed_block)."""
-        path = Path(path_str)
-        if not path.exists():
-            return
-
-        begin = f"# BEGIN DRIFTIFY {marker}"
-        end = f"# END DRIFTIFY {marker}"
-
-        with open(path) as fh:
-            lines = fh.readlines()
-
-        new_lines = []
-        inside = False
-        for line in lines:
-            if line.rstrip("\n") == begin:
-                inside = True
-                continue
-            if line.rstrip("\n") == end:
-                inside = False
-                continue
-            if not inside:
-                new_lines.append(line)
-
-        if len(new_lines) == len(lines):
-            return
-
-        if self.dry_run:
-            _dry(f"remove block '{marker}' from {path}")
-            return
-
-        with open(path, "w") as fh:
-            fh.writelines(new_lines)
-        _info(f"Removed block '{marker}' from {path}")
 
     def _check_command(self, cmd: str) -> bool:
         """Return True if *cmd* is available on PATH; warn and return False otherwise."""
@@ -1097,317 +1046,6 @@ class Driftify:
 
         if self.run_inspectah:
             self._launch_inspectah()
-
-    # ── Undo ──────────────────────────────────────────────────────────────
-
-    def undo(self) -> None:
-        """Reverse a previous driftify run. Best-effort; errors logged but do not abort."""
-        if not STAMP_PATH.exists():
-            _info("No previous run found, skipping undo")
-            return
-
-        _banner(f"{_I.RECYCLE}  driftify — undo")
-
-        for method in (
-            self.undo_secrets,
-            self.undo_nonrpm,
-            self.undo_selinux,
-            self.undo_kernel,
-            self.undo_containers,
-            self.undo_scheduled,
-            self.undo_users,
-            self.undo_storage,
-            self.undo_network,
-            self.undo_config,
-            self.undo_services,
-            self.undo_rpm,
-        ):
-            try:
-                method()
-            except Exception as exc:
-                _warn(f"{method.__name__} failed: {exc}")
-
-        try:
-            STAMP_PATH.unlink()
-            _info(f"Removed stamp file {STAMP_PATH}")
-        except OSError as exc:
-            _warn(f"Could not remove stamp file: {exc}")
-
-        _banner(f"{_I.CHECK}  undo complete")
-
-    def undo_secrets(self) -> None:
-        _info("Undoing secrets...")
-        self._remove_managed_block("/etc/myapp/app.conf", "fake-secrets-app")
-        self._remove_managed_block("/etc/myapp/app.conf", "fake-secrets-standard")
-        self._remove_managed_block("/etc/myapp/database.yml", "fake-secrets-db")
-        self._remove_managed_block("/etc/profile.d/custom-env.sh", "fake-secrets-env")
-        self._remove_path("/etc/myapp/server.key")
-        self._remove_path("/opt/myapp/.env")
-
-    def undo_nonrpm(self) -> None:
-        _info("Undoing non-RPM software...")
-        self._undo_ruby_gems()
-        self._remove_path(MYAPP_VENV)
-        self._remove_path(f"{MYAPP_DIR}/requirements.txt")
-        self._remove_path(LEGACY_APP_DIR)
-        self._remove_path(REPORTING_DIR)
-        self._remove_path("/usr/local/bin/driftify-probe")
-        self._remove_path("/opt/webapp")
-        self._remove_path("/opt/tools/some-tool")
-        self._remove_path("/usr/local/bin/deploy.sh")
-        self._remove_path("/usr/local/bin/mystery-tool")
-        self._remove_path("/usr/bin/custom-tool")
-        self._remove_path("/usr/lib/systemd/system/myapp.service")
-        self._remove_path("/usr/share/myapp")
-        self._remove_path("/usr/sbin/custom-daemon")
-        self._remove_path("/usr/lib64/libcustom.so")
-        self._remove_path("/usr/libexec/myapp-helper")
-        self._remove_path("/usr/bin/actual-tool")
-
-    def undo_selinux(self) -> None:
-        _info("Undoing SELinux...")
-        self._undo_selinux_fcontext()
-        self.run_cmd(["setsebool", "-P", "httpd_can_network_connect", "off"], check=False)
-        self.run_cmd(["setsebool", "-P", "httpd_can_network_relay", "off"], check=False)
-        self.run_cmd(["semodule", "-r", "myapp"], check=False)
-        self._remove_path("/etc/audit/rules.d/driftify.rules")
-        self._remove_path("/etc/audit/rules.d/driftify-file-watch.rules")
-
-    def undo_kernel(self) -> None:
-        _info("Undoing kernel...")
-        self._remove_path("/etc/sysctl.d/99-driftify.conf")
-        self.run_cmd(["sysctl", "--system"], check=False)
-        self.run_cmd(["modprobe", "-r", "br_netfilter"], check=False)
-        self._remove_path("/etc/modules-load.d/driftify.conf")
-        self._remove_path("/etc/modprobe.d/driftify.conf")
-        self._remove_path("/etc/dracut.conf.d/driftify.conf")
-        self._remove_path("/etc/sysctl.d/numa.conf")
-        self._remove_path("/etc/sysconfig/irqbalance")
-        self._remove_path("/etc/udev/rules.d/60-scheduler.rules")
-
-    def undo_containers(self) -> None:
-        _info("Undoing containers...")
-        for name in ("webapp.container", "redis.container", "myapp.network"):
-            self._remove_path(f"/etc/containers/systemd/{name}")
-        self._remove_path("/opt/myapp/docker-compose.yml")
-        self._remove_path(
-            "/home/appuser/.config/containers/systemd/dev-tools.container"
-        )
-        self.run_cmd(["systemctl", "daemon-reload"], check=False)
-
-    def undo_scheduled(self) -> None:
-        _info("Undoing scheduled tasks...")
-        self._remove_path("/etc/cron.d/backup-daily")
-        self._remove_path("/etc/cron.daily/cleanup.sh")
-        self._remove_path("/etc/cron.d/complex-job")
-        self._remove_managed_block("/etc/crontab", "logrotate")
-        self._remove_path("/var/spool/cron/appuser")
-        self._undo_at_job()
-        self.run_cmd(["systemctl", "stop", "myapp-report.timer"], check=False)
-        self.run_cmd(["systemctl", "disable", "myapp-report.timer"], check=False)
-        self._remove_path("/etc/systemd/system/myapp-report.timer")
-        self._remove_path("/etc/systemd/system/myapp-report.service")
-        self._remove_managed_block("/etc/anacrontab", "driftify-anacron")
-        self._remove_path("/etc/cron.allow")
-        self.run_cmd(["systemctl", "daemon-reload"], check=False)
-
-    def undo_users(self) -> None:
-        _info("Undoing users/groups...")
-        self._remove_managed_block("/etc/subuid", "appuser-subuid")
-        self._remove_managed_block("/etc/subgid", "appuser-subgid")
-        self._remove_path("/etc/sudoers.d/appusers")
-        self.run_cmd(["userdel", "-r", "appuser"], check=False)
-        self.run_cmd(["userdel", "-r", "dbuser"], check=False)
-        self.run_cmd(["groupdel", "dbuser"], check=False)
-        self.run_cmd(["groupdel", "developers"], check=False)
-        self.run_cmd(["groupdel", "appgroup"], check=False)
-
-    def undo_storage(self) -> None:
-        _info("Undoing storage...")
-        for mnt in ("/mnt/myapp-nfs", "/mnt/myapp-cifs", "/mnt/auto-app"):
-            self.run_cmd(["umount", mnt], check=False)
-        self._remove_managed_block("/etc/fstab", "nfs-entry")
-        self._remove_managed_block("/etc/fstab", "cifs-entry")
-        self._remove_managed_block("/etc/multipath.conf", "multipath-config")
-        self._remove_path("/etc/auto.master.d/app.autofs")
-        self._remove_path("/etc/auto.app")
-        self._remove_path("/etc/lvm/profile/driftify-thin.profile")
-        self._remove_path("/var/lib/myapp")
-        self._remove_path("/var/log/myapp")
-        self._remove_path("/etc/myapp/cifs.creds")
-
-    def undo_network(self) -> None:
-        _info("Undoing network...")
-        for svc in ("http", "https"):
-            self.run_cmd(
-                ["firewall-cmd", "--permanent", f"--remove-service={svc}"],
-                check=False,
-            )
-        for port in ("8080/tcp", f"{NGINX_DRIFT_PORT}/tcp"):
-            self.run_cmd(
-                ["firewall-cmd", "--permanent", f"--remove-port={port}"],
-                check=False,
-            )
-        self.run_cmd(["firewall-cmd", "--reload"], check=False)
-        self._remove_managed_block("/etc/hosts", "hosts-entries")
-        self._remove_path("/etc/firewalld/zones/myapp.xml")
-        self._remove_path("/etc/NetworkManager/system-connections/mgmt.nmconnection")
-        self._remove_path("/etc/profile.d/proxy.sh")
-        self._remove_path("/etc/sysconfig/network-scripts/route-eth0")
-        self._remove_path("/etc/firewalld/direct.xml")
-        self._remove_path("/etc/sysconfig/network-scripts/ifcfg-eth1")
-
-    def undo_config(self) -> None:
-        _info("Undoing config files...")
-        self._undo_locale_timezone()
-        self._undo_nsswitch()
-        self._undo_alternatives()
-        self._undo_sssd_kerberos()
-        self._remove_managed_block("/etc/nginx/nginx.conf", "nginx-server-block")
-        if self._check_command("semanage"):
-            self.run_cmd(
-                ["semanage", "port", "-d", "-t", "http_port_t", "-p", "tcp",
-                 str(NGINX_DRIFT_PORT)],
-                check=False,
-            )
-        self._remove_managed_block("/etc/chrony.conf", "chrony-servers")
-        self._remove_managed_block("/etc/chrony.conf", "chrony-servers-ks")
-        self._remove_managed_block("/etc/httpd/conf/httpd.conf", "httpd-ks")
-        self._remove_managed_block("/etc/security/limits.conf", "limits-nofile")
-
-        for cfg in ("/etc/httpd/conf/httpd.conf",
-                     "/etc/nginx/nginx.conf",
-                     "/etc/ssh/sshd_config"):
-            r = self.run_cmd(
-                ["rpm", "-qf", cfg],
-                check=False, capture=True,
-            )
-            if r is not None and r.returncode == 0:
-                pkg = r.stdout.strip().splitlines()[0]
-                _info(f"Reinstalling {pkg} to restore {cfg}")
-                self.run_cmd(["dnf", "reinstall", "-y", pkg], check=False)
-
-        self._remove_path("/etc/myapp")
-        self._remove_path("/etc/profile.d/custom-env.sh")
-        self._remove_path("/etc/logrotate.d/myapp")
-        self._remove_path("/etc/words.conf")
-        self._remove_path("/etc/tmpfiles.d/appone.conf")
-        self._remove_path("/etc/tmpfiles.d/cleanup.conf")
-        self._remove_path("/etc/tmpfiles.d/apptwo-cleanup.conf")
-        self._remove_path("/etc/tmpfiles.d/mixed-app.conf")
-        self._remove_path("/etc/security/faillock.conf")
-        self._remove_path("/etc/pam.d/custom-sshd")
-        self._remove_path("/etc/authselect/authselect.conf")
-        self._remove_path("/etc/rsyslog.d/forward-to-siem.conf")
-        self._remove_path("/etc/systemd/journald.conf.d/custom.conf")
-        self._remove_path("/etc/xinetd.d/custom-service")
-        self._remove_path("/etc/aide.conf")
-        self._remove_path("/etc/logrotate.d/myapp")
-        self._remove_path("/etc/audit/rules.d/custom.rules")
-        self._remove_path("/etc/mydb/config.yaml")
-        self._remove_path("/opt/myapp/lib")
-        self._remove_path("/etc/app/ssl")
-        self._remove_path("/opt/tool/bin/run")
-        self._remove_path("/usr/local/bin/run-tool")
-        self._remove_path("/etc/tuned/myapp")
-        self._remove_path("/etc/sysctl.d/hugepages.conf")
-        self._remove_path("/etc/sysctl.d/thp.conf")
-
-        # driftify stopped moving the sshd port on 2026-11-07. Hosts drifted
-        # before that still carry the 2222/2200 firewall openings and
-        # ssh_port_t labels, so undo keeps removing them.
-        stale_ssh_ports = ("2222", "2200")
-        for port in stale_ssh_ports:
-            self.run_cmd(
-                ["firewall-cmd", "--permanent", f"--remove-port={port}/tcp"],
-                check=False,
-            )
-        self.run_cmd(["firewall-cmd", "--reload"], check=False)
-
-        import shutil as _shutil
-        if _shutil.which("semanage"):
-            for port in stale_ssh_ports:
-                self.run_cmd(
-                    ["semanage", "port", "-d", "-t", "ssh_port_t", "-p", "tcp", port],
-                    check=False,
-                )
-
-    def undo_services(self) -> None:
-        _info("Undoing services...")
-        self._undo_tuned_profile()
-        for svc in ("httpd", "nginx"):
-            self.run_cmd(["systemctl", "stop", svc], check=False)
-            self.run_cmd(["systemctl", "disable", svc], check=False)
-        kdump_mask_path = Path("/etc/systemd/system/kdump.service")
-        if kdump_mask_path.is_symlink():
-            try:
-                if os.readlink(kdump_mask_path) == "/dev/null":
-                    self._remove_path(str(kdump_mask_path))
-            except OSError:
-                pass
-        self.run_cmd(["systemctl", "enable", "kdump"], check=False)
-        self.run_cmd(["systemctl", "unmask", "bluetooth"], check=False)
-        self._remove_path("/etc/systemd/system/driftify-backup.timer")
-        self._remove_path("/etc/systemd/system/driftify-backup.service")
-        self._remove_path("/etc/systemd/system/httpd.service.d")
-        self._remove_path("/etc/systemd/system/nginx.service.d")
-        self._remove_path("/etc/init.d/legacy-app")
-        self._remove_path("/etc/systemd/system/sshd.service")
-        self.run_cmd(["systemctl", "stop", "node_exporter"], check=False)
-        self.run_cmd(["systemctl", "disable", "node_exporter"], check=False)
-        self.run_cmd(["systemctl", "daemon-reload"], check=False)
-
-    def undo_rpm(self) -> None:
-        _info("Undoing RPM packages...")
-        all_pkgs: list[str] = []
-        for level in PROFILES:
-            all_pkgs.extend(BASE_PACKAGES.get(level, []))
-            all_pkgs.extend(EPEL_PACKAGES.get(level, []))
-            all_pkgs.extend(RPMFUSION_PACKAGES.get(level, []))
-
-        seen: set[str] = set()
-        unique: list[str] = []
-        for pkg in all_pkgs:
-            if pkg not in seen:
-                seen.add(pkg)
-                unique.append(pkg)
-
-        if unique:
-            _info(f"Removing {len(unique)} packages...")
-            r = self.run_cmd(
-                ["dnf", "remove", "-y", "--exclude=inspectah"] + unique,
-                check=False, capture=self.quiet,
-            )
-            if r is not None and r.returncode != 0:
-                detail = ""
-                combined_output = " ".join(
-                    part for part in (r.stdout, r.stderr) if part
-                ).lower()
-                if "protected package" in combined_output:
-                    detail = " (protected-package conflict)"
-                _info(f"Bulk remove failed{detail}; "
-                      "falling back to one-by-one removal...")
-                for pkg in unique:
-                    self.run_cmd(["dnf", "remove", "-y", "--exclude=inspectah", pkg], check=False)
-
-        for repo_pkg in ("epel-release", "rpmfusion-free-release"):
-            r = self.run_cmd(
-                ["rpm", "-q", repo_pkg],
-                check=False, capture=True,
-            )
-            if r is not None and r.returncode == 0:
-                _info(f"Removing repo package {repo_pkg}")
-                self.run_cmd(["dnf", "remove", "-y", repo_pkg], check=False)
-
-        # Undo DNF module streams and version locks (kitchen-sink)
-        _info("Undoing DNF module streams and version locks...")
-        self.run_cmd(["dnf", "module", "disable", "-y", "postgresql"], check=False)
-        self.run_cmd(["dnf", "versionlock", "delete", "curl"], check=False)
-        self.run_cmd(["dnf", "remove", "-y", "dnf-plugin-versionlock"], check=False)
-
-        # Undo mixed-arch and duplicate package fixtures (kitchen-sink)
-        self._undo_mixed_arch()
-        self._undo_duplicate_package()
 
     # ── RPM / Packages ────────────────────────────────────────────────────
 
@@ -2609,7 +2247,7 @@ domain=INTERNAL
             )
 
     def _queue_at_job(self) -> None:
-        """Queue an at job and store its ID in the stamp for undo."""
+        """Queue an at job so inspectah has a pending at job to detect."""
         if self.dry_run:
             _dry("echo 'touch /tmp/driftify-at-probe' | at now + 1 hour")
             return
@@ -2629,23 +2267,8 @@ domain=INTERNAL
         if match:
             job_id = int(match.group(1))
             _info(f"{_I.CLOCK}  Queued at job {job_id}")
-            self.stamp.data["at_job_id"] = job_id
-            self.stamp.save()
         else:
             _warn(f"Could not parse at job ID from: {r.stderr.strip()}")
-
-    def _undo_at_job(self) -> None:
-        """Remove the at job recorded in the stamp file, if any."""
-        if not STAMP_PATH.exists():
-            return
-        try:
-            with open(STAMP_PATH) as fh:
-                data = json.load(fh)
-        except (json.JSONDecodeError, OSError):
-            return
-        job_id = data.get("at_job_id")
-        if job_id is not None:
-            self.run_cmd(["atrm", str(job_id)], check=False)
 
     # ── Users / Groups ─────────────────────────────────────────────────────
 
@@ -3878,91 +3501,6 @@ domain=INTERNAL
             check=False,
         )
 
-    # ── Coverage gap undo helpers ──────────────────────────────────────────────
-
-    def _undo_locale_timezone(self) -> None:
-        _info("Restoring locale to en_US.UTF-8 and timezone to UTC")
-        self.run_cmd(["localectl", "set-locale", "LANG=en_US.UTF-8"], check=False)
-        self.run_cmd(["timedatectl", "set-timezone", "UTC"], check=False)
-
-    def _undo_tuned_profile(self) -> None:
-        if self._check_command("tuned-adm"):
-            _info("Restoring tuned profile to virtual-guest")
-            self.run_cmd(["tuned-adm", "profile", "virtual-guest"], check=False)
-
-    def _undo_nsswitch(self) -> None:
-        """Remove sss and winbind entries added to /etc/nsswitch.conf."""
-        path = "/etc/nsswitch.conf"
-        if not Path(path).exists():
-            return
-        _info(f"Removing sss/winbind from {path}")
-        for key in ("passwd", "group", "shadow"):
-            self.run_cmd(
-                ["sed", "-i", f"/^{key}:/s/ winbind//g", path],
-                check=False,
-            )
-            self.run_cmd(
-                ["sed", "-i", f"/^{key}:/s/ sss//g", path],
-                check=False,
-            )
-
-    def _undo_sssd_kerberos(self) -> None:
-        _info("Disabling and removing sssd + Kerberos config")
-        self.run_cmd(["systemctl", "disable", "sssd"], check=False)
-        self.run_cmd(["dnf", "remove", "-y", "sssd", "sssd-krb5"], check=False)
-        self._remove_path("/etc/sssd/sssd.conf")
-        self._remove_path("/etc/krb5.conf")
-
-    def _undo_alternatives(self) -> None:
-        if self._check_command("alternatives"):
-            _info("Resetting python3 alternatives to auto")
-            self.run_cmd(["alternatives", "--auto", "python3"], check=False)
-
-    def _undo_selinux_fcontext(self) -> None:
-        if self._check_command("semanage"):
-            _info("Removing httpd_sys_content_t fcontext for /srv/www")
-            self.run_cmd(
-                ["semanage", "fcontext", "-d", "/srv/www(/.*)?"],
-                check=False,
-            )
-        self._remove_path("/srv/www")
-
-    def _undo_mixed_arch(self) -> None:
-        import platform
-        if platform.machine() != "x86_64":
-            return
-        _info("Removing glibc.i686")
-        self.run_cmd(["dnf", "remove", "-y", "glibc.i686"], check=False)
-
-    def _undo_duplicate_package(self) -> None:
-        """Best-effort removal of the older zlib duplicate."""
-        _info("Attempting removal of older zlib duplicate (best-effort)")
-        if self.dry_run:
-            _dry("rpm -e --nodeps zlib-1.2.11-38.el9.x86_64  # (older duplicate, if present)")
-            return
-        try:
-            r = subprocess.run(
-                ["rpm", "-q", "--qf", "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n", "zlib"],
-                capture_output=True, text=True, check=False,
-            )
-            versions = [v.strip() for v in r.stdout.splitlines() if v.strip()]
-            if len(versions) > 1:
-                oldest = sorted(versions)[0]
-                _info(f"Removing duplicate: {oldest}")
-                self.run_cmd(["rpm", "-e", "--nodeps", oldest], check=False)
-            else:
-                _info("No duplicate zlib found — nothing to remove")
-        except Exception as exc:
-            _warn(f"Duplicate package removal failed (non-fatal): {exc}")
-
-    def _undo_ruby_gems(self) -> None:
-        _info("Uninstalling ruby gems and removing ruby")
-        self.run_cmd(
-            ["gem", "uninstall", "bundler", "sinatra", "-x", "--all"],
-            check=False,
-        )
-        self.run_cmd(["dnf", "remove", "-y", "ruby"], check=False)
-
     def _find_inspectah(self):
         """Locate the inspectah binary: ./inspectah first, then $PATH."""
         import shutil as _shutil
@@ -4272,22 +3810,11 @@ examples:
   sudo ./driftify.py --profile kitchen-sink   # everything
   sudo ./driftify.py --skip-nonrpm            # standard minus non-RPM software
   sudo ./driftify.py --dry-run                # preview without changes
-  sudo ./driftify.py --undo                   # reverse previous run and exit
-  sudo ./driftify.py --undo-first -y          # undo then re-apply standard profile
 """,
     )
     p.add_argument(
         "--profile", choices=PROFILES, default="standard",
         help="drift profile: minimal, standard (default), kitchen-sink",
-    )
-    undo_group = p.add_mutually_exclusive_group()
-    undo_group.add_argument(
-        "--undo", action="store_true",
-        help="reverse a previous driftify run and exit",
-    )
-    undo_group.add_argument(
-        "--undo-first", action="store_true",
-        help="reverse previous run, then apply drift normally",
     )
     for section in SECTIONS:
         p.add_argument(
@@ -4407,13 +3934,6 @@ def main() -> None:
         run_inspectah=args.run_inspectah,
         inspectah_output=args.inspectah_output,
     )
-
-    if args.undo:
-        drifter.undo()
-        return
-
-    if args.undo_first:
-        drifter.undo()
 
     drifter.run()
 

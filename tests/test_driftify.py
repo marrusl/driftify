@@ -49,8 +49,6 @@ class RedirectedFixtureTestCase(DriftifyTestCase):
 
         original_write = d._write_managed_text
         original_append = d._append_managed_block
-        original_remove_path = d._remove_path
-        original_remove_block = d._remove_managed_block
         original_ensure_dir = d._ensure_dir
 
         d._write_managed_text = (
@@ -68,11 +66,6 @@ class RedirectedFixtureTestCase(DriftifyTestCase):
                 create_if_missing=create_if_missing,
                 inside_block=inside_block,
             )
-        )
-        d._remove_path = lambda path_str: original_remove_path(str(map_path(path_str)))
-        d._remove_managed_block = (
-            lambda path_str, marker:
-            original_remove_block(str(map_path(path_str)), marker)
         )
         d._ensure_dir = lambda path: original_ensure_dir(map_path(path))
 
@@ -427,63 +420,6 @@ class TestRunCmdDnfQuietMode(DriftifyTestCase):
                 d.run_cmd(["dnf", "install", "-y", "no-such-pkg"], check=True)
 
 
-class TestUndoRpmBulkRemoveFallback(DriftifyTestCase):
-    def _run_undo_rpm(self, *, bulk_stdout="", bulk_stderr=""):
-        d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
-        bulk_result = subprocess.CompletedProcess(
-            ["dnf", "remove", "-y", "pkg-a", "pkg-b"],
-            1,
-            stdout=bulk_stdout,
-            stderr=bulk_stderr,
-        )
-        calls = []
-
-        def fake_run_cmd(cmd, check=True, capture=False):
-            calls.append((cmd, check, capture))
-            if cmd[:3] == ["dnf", "remove", "-y"] and len(cmd) > 4:
-                return bulk_result
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
-
-        self._suppress.__exit__(None, None, None)
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                with unittest.mock.patch.object(driftify, "PROFILES", ["minimal"]), \
-                     unittest.mock.patch.dict(driftify.BASE_PACKAGES, {"minimal": ["pkg-a", "pkg-b"]}, clear=True), \
-                     unittest.mock.patch.dict(driftify.EPEL_PACKAGES, {"minimal": []}, clear=True), \
-                     unittest.mock.patch.dict(driftify.RPMFUSION_PACKAGES, {"minimal": []}, clear=True), \
-                     unittest.mock.patch.object(d, "run_cmd", side_effect=fake_run_cmd):
-                    d.undo_rpm()
-        finally:
-            self._suppress.__enter__()
-        return buf.getvalue(), calls
-
-    def test_generic_bulk_remove_failure_uses_generic_message(self):
-        output, calls = self._run_undo_rpm(bulk_stderr="failed to download metadata")
-
-        self.assertIn("Bulk remove failed; falling back to one-by-one removal...", output)
-        self.assertNotIn("protected-package conflict", output)
-        self.assertIn((["dnf", "remove", "-y", "--exclude=inspectah", "pkg-a"], False, False), calls)
-        self.assertIn((["dnf", "remove", "-y", "--exclude=inspectah", "pkg-b"], False, False), calls)
-
-    def test_protected_package_failure_mentions_protected_packages(self):
-        output, _ = self._run_undo_rpm(
-            bulk_stderr="Error: The operation would result in removing the following protected packages: setup"
-        )
-
-        self.assertIn(
-            "Bulk remove failed (protected-package conflict); falling back to one-by-one removal...",
-            output,
-        )
-
-    def test_non_quiet_bulk_remove_keeps_live_output(self):
-        _, calls = self._run_undo_rpm()
-        self.assertIn(
-            (["dnf", "remove", "-y", "--exclude=inspectah", "pkg-a", "pkg-b"], False, False),
-            calls,
-        )
-
-
 class TestConfirmation(DriftifyTestCase):
     def _make_drifter(self, yes=False, dry_run=False):
         return driftify.Driftify("standard", dry_run=dry_run,
@@ -774,43 +710,8 @@ class TestServices(DriftifyTestCase):
         self._suppress.__enter__()
         self.assertIn("2 drop-in override(s)", buf.getvalue())
 
-    def test_undo_services_removes_kdump_mask_before_enabling(self):
-        d = driftify.Driftify("standard", dry_run=False, skip_sections=[])
-        events = []
-
-        with tempfile.TemporaryDirectory() as td:
-            mask_path = Path(td) / "etc" / "systemd" / "system" / "kdump.service"
-            mask_path.parent.mkdir(parents=True)
-            mask_path.symlink_to("/dev/null")
-
-            def fake_path(path_str):
-                if path_str == "/etc/systemd/system/kdump.service":
-                    return mask_path
-                return Path(path_str)
-
-            def fake_remove(path_str):
-                events.append(("remove", path_str))
-                if path_str == str(mask_path):
-                    Path(path_str).unlink(missing_ok=True)
-
-            def fake_run(cmd, check=False, capture=False):
-                events.append(("run", cmd))
-                return unittest.mock.MagicMock(returncode=0)
-
-            d._remove_path = fake_remove
-            d.run_cmd = fake_run
-
-            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path):
-                d.undo_services()
-
-        self.assertLess(
-            events.index(("remove", str(mask_path))),
-            events.index(("run", ["systemctl", "enable", "kdump"])),
-        )
-
-
 class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
-    def test_services_standard_creates_backup_timer_files_and_undo_removes_them(self):
+    def test_services_standard_creates_backup_timer_files(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path = self._build_redirected_drifter(td, "standard")
             mask_path = map_path("/etc/systemd/system/kdump.service")
@@ -854,11 +755,7 @@ class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
                 "ExecStart=/usr/local/bin/backup.sh\n",
             )
 
-            d.undo_services()
-            self.assertFalse(timer_path.exists())
-            self.assertFalse(service_path.exists())
-
-    def test_services_minimal_masks_kdump_and_undo_removes_dev_null_symlink(self):
+    def test_services_minimal_masks_kdump_with_dev_null_symlink(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path = self._build_redirected_drifter(td, "minimal")
             mask_path = map_path("/etc/systemd/system/kdump.service")
@@ -878,10 +775,6 @@ class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
 
             self.assertTrue(mask_path.is_symlink())
             self.assertEqual(os.readlink(mask_path), "/dev/null")
-
-            with unittest.mock.patch.object(driftify, "Path", side_effect=fake_path):
-                d.undo_services()
-            self.assertFalse(mask_path.exists())
 
     def test_services_minimal_does_not_create_backup_timer_files(self):
         with tempfile.TemporaryDirectory() as td:
@@ -904,7 +797,7 @@ class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
             self.assertFalse(map_path("/etc/systemd/system/driftify-backup.timer").exists())
             self.assertFalse(map_path("/etc/systemd/system/driftify-backup.service").exists())
 
-    def test_storage_kitchen_sink_creates_lvm_and_multipath_and_undo_cleans_up(self):
+    def test_storage_kitchen_sink_creates_lvm_and_multipath(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path = self._build_redirected_drifter(td, "kitchen-sink")
             d.run_cmd = lambda *a, **k: None
@@ -924,11 +817,6 @@ class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
                 "}\n",
             )
 
-            d.undo_storage()
-            self.assertFalse(profile_path.exists())
-            if multipath_path.exists():
-                self.assertNotIn("BEGIN DRIFTIFY multipath-config", multipath_path.read_text())
-
     def test_storage_standard_does_not_create_lvm_or_multipath_fixtures(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path = self._build_redirected_drifter(td, "standard")
@@ -939,7 +827,7 @@ class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
             self.assertFalse(map_path("/etc/multipath.conf").exists())
             self.assertFalse(map_path("/etc/lvm/profile/driftify-thin.profile").exists())
 
-    def test_selinux_standard_creates_file_watch_rules_and_undo_removes_them(self):
+    def test_selinux_standard_creates_file_watch_rules(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path = self._build_redirected_drifter(td, "standard")
             d.run_cmd = lambda *a, **k: None
@@ -955,9 +843,6 @@ class TestMissingCoverageFixtures(RedirectedFixtureTestCase):
                 "-w /etc/passwd -p wa -k passwd-changes\n"
                 "-a always,exit -F arch=b64 -S execve -F euid=0 -k root-commands\n",
             )
-
-            d.undo_selinux()
-            self.assertFalse(rules_path.exists())
 
     def test_selinux_minimal_does_not_create_file_watch_rules(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1249,16 +1134,6 @@ class TestPythonEnvironments(DriftifyTestCase):
             d.drift_nonrpm()
         self._suppress.__enter__()
         self.assertNotIn(driftify.LEGACY_APP_VENV, buf.getvalue())
-
-    def test_undo_nonrpm_removes_venv_fixtures(self):
-        d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
-        removed = []
-        d._remove_path = removed.append
-        d._undo_ruby_gems = lambda: None
-        d.undo_nonrpm()
-        for path in (driftify.MYAPP_VENV, "/opt/myapp/requirements.txt",
-                     driftify.LEGACY_APP_DIR, driftify.REPORTING_DIR):
-            self.assertIn(path, removed)
 
     def test_myapp_service_declares_state_directory(self):
         """/var/lib/myapp needs a StateDirectory= backing to be classified."""
@@ -1560,20 +1435,6 @@ class TestSshdConfigNoPortMove(DriftifyTestCase):
                         self.assertIn(key, merged)
                 self._assert_no_port_commands(commands)
 
-    def test_undo_config_cleans_up_stale_ssh_port_artifacts(self):
-        # Hosts drifted by a driftify that still moved the port carry these
-        # openings and labels, so undo keeps removing them.
-        with unittest.mock.patch("shutil.which", return_value="/usr/sbin/semanage"):
-            _, _, commands, _ = self._run("minimal", "undo_config")
-        for port in self.MOVED_PORTS:
-            self.assertIn(
-                ["firewall-cmd", "--permanent", f"--remove-port={port}/tcp"],
-                commands)
-            self.assertIn(
-                ["semanage", "port", "-d", "-t", "ssh_port_t", "-p", "tcp", port],
-                commands)
-        self.assertIn(["firewall-cmd", "--reload"], commands)
-
     def test_plan_and_summary_do_not_mention_a_port(self):
         for profile in ("standard", "kitchen-sink"):
             with self.subTest(profile=profile):
@@ -1602,7 +1463,6 @@ class TestNginxPortLabel(DriftifyTestCase):
     NGINX_CONF = "/etc/nginx/nginx.conf"
     BLOCK = "nginx-server-block"
     LABEL_ADD = ["semanage", "port", "-a", "-t", "http_port_t", "-p", "tcp", "8081"]
-    LABEL_DEL = ["semanage", "port", "-d", "-t", "http_port_t", "-p", "tcp", "8081"]
 
     def _run(self, profile, method, semanage="/usr/sbin/semanage"):
         d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
@@ -1666,14 +1526,6 @@ class TestNginxPortLabel(DriftifyTestCase):
         _, commands, _ = self._run("minimal", "drift_network")
         self.assertNotIn(
             ["firewall-cmd", "--permanent", "--add-port=8081/tcp"], commands)
-
-    def test_undo_removes_label_and_firewall_opening(self):
-        _, commands, _ = self._run("minimal", "undo_config")
-        self.assertIn(self.LABEL_DEL, commands)
-        _, commands, _ = self._run("minimal", "undo_network")
-        self.assertIn(
-            ["firewall-cmd", "--permanent", "--remove-port=8081/tcp"], commands)
-        self.assertEqual(commands[-1], ["firewall-cmd", "--reload"])
 
     def test_plan_and_summary_mention_nginx_port(self):
         for profile in ("standard", "kitchen-sink"):
@@ -1805,15 +1657,6 @@ class TestNginxBlockInsideHttp(RedirectedFixtureTestCase):
                 d._append_managed_block(str(p), "nginx-server-block", self.BLOCK,
                                         inside_block="http")
             self.assertEqual(p.read_text().count("# BEGIN DRIFTIFY nginx-server-block"), 1)
-
-    def test_remove_restores_the_original_file(self):
-        with tempfile.TemporaryDirectory() as td:
-            d, _ = self._build_redirected_drifter(td, "standard")
-            p = self._conf(td, STOCK_NGINX_CONF)
-            d._append_managed_block(str(p), "nginx-server-block", self.BLOCK,
-                                    inside_block="http")
-            d._remove_managed_block(str(p), "nginx-server-block")
-            self.assertEqual(p.read_text(), STOCK_NGINX_CONF)
 
     def test_http_block_not_last_in_file(self):
         conf = "http {\n    server {\n        listen 80;\n    }\n}\n\nevents {\n}\n"

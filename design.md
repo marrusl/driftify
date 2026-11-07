@@ -18,7 +18,7 @@ driftify is a companion tool to inspectah. It runs on a fresh RHEL, CentOS Strea
 
 **No real secrets.** driftify plants fake secrets that look realistic enough to trigger inspectah's redaction patterns, but they're obviously synthetic. Nobody should be able to accidentally leak a real credential from a driftify-prepared system.
 
-**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise inspectah. System state can be restored via VM snapshots or driftify's `--undo` / `--undo-first` flags, which reverse a previous run.
+**Disposable targets.** driftify is designed for throwaway VMs that exist solely to exercise inspectah. System state is restored by reverting the VM snapshot. driftify had an undo mode until November 2026; it was removed because it reversed what driftify remembered doing rather than what the host became, so it could leave a host looking clean while still carrying drift, and a snapshot revert cannot.
 
 **Fast by default.** The standard profile should complete in under 3 minutes on a system with decent network. Expensive operations (compiling binaries, pulling large images) are opt-in via the `kitchen-sink` profile.
 
