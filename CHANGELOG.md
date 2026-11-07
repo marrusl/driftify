@@ -25,4 +25,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **nginx server block lands outside `http {}`**: driftify now inserts its managed `server` block into `/etc/nginx/nginx.conf` just before the `http` block's closing brace, and skips it with a warning if it cannot find that brace. It used to append the block after the `http` block, where `nginx -t` rejects it with `"server" directive is not allowed here`, so a drifted host had nginx enabled but unable to start. The minimal profile's block also moves from port 8080, which httpd's drifted `Listen 8080` already claims, to port 81, which is in the stock `http_port_t` set and so still needs no SELinux label.
 - **Undo leaves stale ssh port openings and labels**: undo again removes the 2222/tcp and 2200/tcp firewalld openings and their `ssh_port_t` SELinux labels. driftify no longer creates them, but a host drifted by an older driftify still carries them, and undo had stopped cleaning them up.

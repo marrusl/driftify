@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -57,13 +58,15 @@ class RedirectedFixtureTestCase(DriftifyTestCase):
             original_write(str(map_path(path_str)), content, mode)
         )
         d._append_managed_block = (
-            lambda path_str, marker, block, mode=0o644, create_if_missing=True:
+            lambda path_str, marker, block, mode=0o644, create_if_missing=True,
+            inside_block=None:
             original_append(
                 str(map_path(path_str)),
                 marker,
                 block,
                 mode=mode,
                 create_if_missing=create_if_missing,
+                inside_block=inside_block,
             )
         )
         d._remove_path = lambda path_str: original_remove_path(str(map_path(path_str)))
@@ -1639,9 +1642,14 @@ class TestNginxPortLabel(DriftifyTestCase):
                 self.assertNotIn("listen 8080", block)
                 self.assertIn(self.LABEL_ADD, commands)
 
-    def test_minimal_nginx_keeps_stock_labelled_port(self):
+    def test_minimal_nginx_uses_stock_http_port_t_port(self):
+        # 81 is in the stock http_port_t set, so minimal needs no label, and
+        # httpd's drifted Listen 8080 keeps 8080 to itself.
+        self.assertEqual(driftify.NGINX_MINIMAL_PORT, 81)
         blocks, commands, _ = self._run("minimal", "drift_config")
-        self.assertIn("listen 8080 default_server;", self._nginx_block(blocks))
+        block = self._nginx_block(blocks)
+        self.assertIn("listen 81 default_server;", block)
+        self.assertNotIn("listen 8080", block)
         self.assertFalse(any("http_port_t" in c for c in commands))
 
     def test_label_skipped_with_warning_without_semanage(self):
@@ -1684,6 +1692,153 @@ class TestNginxPortLabel(DriftifyTestCase):
                 self.assertIn("nginx on 8081 (http_port_t label)", buf.getvalue())
         d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
         self.assertNotIn("8081", "\n".join(d._run_description()))
+
+
+# Excerpt of the stock RHEL 9 nginx.conf layout: the http block is last, its
+# default server listens on 80, and a commented TLS server carries braces of
+# its own after that server.
+STOCK_NGINX_CONF = """\
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log;
+pid /run/nginx.pid;
+
+include /usr/share/nginx/modules/*.conf;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" ';
+    access_log  /var/log/nginx/access.log  main;
+    include             /etc/nginx/mime.types;
+    include /etc/nginx/conf.d/*.conf;
+
+    server {
+        listen       80;
+        listen       [::]:80;
+        server_name  _;
+        root         /usr/share/nginx/html;
+
+        error_page 404 /404.html;
+        location = /404.html {
+        }
+    }
+
+# Settings for a TLS enabled server.
+#
+#    server {
+#        listen       443 ssl http2;
+#        location = /50x.html {
+#        }
+#    }
+
+}
+
+"""
+
+def _nginx_context_of(text, needle):
+    """Return the names of the nginx blocks open at the line containing needle."""
+    stack, words = [], []
+    for line in text.splitlines():
+        if needle in line:
+            return list(stack)
+        for token in re.findall(r"[^\s{};]+|[{};]", line.split("#", 1)[0]):
+            if token == "{":
+                stack.append(words[0] if words else "")
+                words = []
+            elif token == "}":
+                stack.pop()
+                words = []
+            elif token == ";":
+                words = []
+            else:
+                words.append(token)
+    raise AssertionError(f"{needle!r} not found")
+
+
+class TestNginxBlockInsideHttp(RedirectedFixtureTestCase):
+    """The nginx server block must land inside http {}, where nginx accepts it."""
+
+    BLOCK = "server {\n    listen 8081 default_server;\n}"
+
+    def _conf(self, td, text):
+        p = Path(td) / "nginx.conf"
+        p.write_text(text)
+        return p
+
+    def test_block_is_inserted_inside_http(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _ = self._build_redirected_drifter(td, "standard")
+            p = self._conf(td, STOCK_NGINX_CONF)
+            d._append_managed_block(str(p), "nginx-server-block", self.BLOCK,
+                                    create_if_missing=False, inside_block="http")
+            text = p.read_text()
+            self.assertEqual(_nginx_context_of(text, "listen 8081"), ["http", "server"])
+            # Still the last } at column zero closes http, after the block.
+            self.assertLess(text.index("# END DRIFTIFY nginx-server-block"),
+                            text.rindex("\n}\n"))
+
+    def test_insert_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _ = self._build_redirected_drifter(td, "standard")
+            p = self._conf(td, STOCK_NGINX_CONF)
+            for _ in range(2):
+                d._append_managed_block(str(p), "nginx-server-block", self.BLOCK,
+                                        inside_block="http")
+            self.assertEqual(p.read_text().count("# BEGIN DRIFTIFY nginx-server-block"), 1)
+
+    def test_remove_restores_the_original_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _ = self._build_redirected_drifter(td, "standard")
+            p = self._conf(td, STOCK_NGINX_CONF)
+            d._append_managed_block(str(p), "nginx-server-block", self.BLOCK,
+                                    inside_block="http")
+            d._remove_managed_block(str(p), "nginx-server-block")
+            self.assertEqual(p.read_text(), STOCK_NGINX_CONF)
+
+    def test_http_block_not_last_in_file(self):
+        conf = "http {\n    server {\n        listen 80;\n    }\n}\n\nevents {\n}\n"
+        with tempfile.TemporaryDirectory() as td:
+            d, _ = self._build_redirected_drifter(td, "standard")
+            p = self._conf(td, conf)
+            d._append_managed_block(str(p), "nginx-server-block", self.BLOCK,
+                                    inside_block="http")
+            self.assertEqual(_nginx_context_of(p.read_text(), "listen 8081"),
+                             ["http", "server"])
+
+    def test_missing_http_block_warns_and_leaves_file_alone(self):
+        for conf in ("events {\n}\n",
+                     "http {\n    server {\n        listen 80;\n    }\n",
+                     "#http {\n#}\n"):
+            with self.subTest(conf=conf), tempfile.TemporaryDirectory() as td:
+                d, _ = self._build_redirected_drifter(td, "standard")
+                p = self._conf(td, conf)
+                self._suppress.__exit__(None, None, None)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    d._append_managed_block(str(p), "nginx-server-block",
+                                            self.BLOCK, inside_block="http")
+                self._suppress.__enter__()
+                self.assertEqual(p.read_text(), conf)
+                self.assertIn("http", buf.getvalue())
+                self.assertIn("skipping block 'nginx-server-block'", buf.getvalue())
+
+    def test_drift_config_asks_for_the_http_block(self):
+        for profile in ("minimal", "standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+                calls = []
+                d._append_managed_block = (
+                    lambda path_str, marker, block, **kw:
+                    calls.append((path_str, marker, kw))
+                )
+                d.run_cmd = lambda *a, **k: None
+                d.drift_config()
+                nginx = [kw for p, m, kw in calls if m == "nginx-server-block"]
+                self.assertEqual(len(nginx), 1)
+                self.assertEqual(nginx[0].get("inside_block"), "http")
 
 
 class TestFedoraSupport(DriftifyTestCase):

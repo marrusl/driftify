@@ -83,6 +83,11 @@ GRUB_DEFAULT_PATH = "/etc/default/grub"
 # custom SELinux port label for inspectah to render as `semanage port`.
 NGINX_DRIFT_PORT = 8081
 
+# minimal's managed nginx server block listens here. 81 is in the stock
+# http_port_t set, so it needs no label, and it stays clear of httpd's drifted
+# Listen 8080 and nginx's own stock server on 80.
+NGINX_MINIMAL_PORT = 81
+
 # ── Python environment fixtures ──────────────────────────────────────────────
 # inspectah rates a venv "high confidence" only when a requirements.txt sits
 # in the venv's parent directory or the venv root, and only high-confidence
@@ -412,6 +417,42 @@ def _warn(msg: str) -> None:
     print(f"  {_C.YELLOW}{_I.WARN}{_C.RESET}  {msg}")
 
 
+_NGINX_QUOTED_RE = re.compile(r"\"[^\"]*\"|'[^']*'")
+_NGINX_TOKEN_RE = re.compile(r"[^\s{};]+|[{};]")
+
+
+def _nginx_block_close_line(lines: list, name: str):
+    """Return the index of the line whose } closes the top-level `name {` block.
+
+    Comments and quoted strings are ignored. Returns None when there is no such
+    block, it is never closed, or its } shares a line with other directives, so
+    the caller can refuse rather than write a config nginx will reject.
+    """
+    depth = 0
+    words = []
+    inside = False
+    for idx, line in enumerate(lines):
+        code = _NGINX_QUOTED_RE.sub('""', line).split("#", 1)[0]
+        for token in _NGINX_TOKEN_RE.findall(code):
+            if token == "{":
+                if depth == 0 and words == [name]:
+                    inside = True
+                depth += 1
+                words = []
+            elif token == "}":
+                depth -= 1
+                words = []
+                if depth < 0:
+                    return None
+                if depth == 0 and inside:
+                    return idx if code.strip() == "}" else None
+            elif token == ";":
+                words = []
+            else:
+                words.append(token)
+    return None
+
+
 def _error(msg: str) -> None:
     print(f"  {_C.RED}{_I.ERROR}{_C.RESET}  {msg}", file=sys.stderr)
 
@@ -710,8 +751,14 @@ class Driftify:
         self._write_managed_text(path_str, out)
 
     def _append_managed_block(self, path_str: str, marker: str, block: str,
-                              mode: int = 0o644, create_if_missing: bool = True) -> None:
-        """Append an idempotent driftify-managed block to a file."""
+                              mode: int = 0o644, create_if_missing: bool = True,
+                              inside_block: str = None) -> None:
+        """Append an idempotent driftify-managed block to a file.
+
+        With *inside_block* (an nginx block name such as "http"), the block is
+        inserted just before that top-level block's closing brace instead of at
+        the end of the file; if that brace cannot be found, nothing is written.
+        """
         path = Path(path_str)
         begin = f"# BEGIN DRIFTIFY {marker}"
         end = f"# END DRIFTIFY {marker}"
@@ -728,6 +775,17 @@ class Driftify:
 
         if begin in current:
             _info(f"Block already present in {path}: {marker}")
+            return
+
+        if inside_block:
+            lines = current.splitlines(keepends=True)
+            close = _nginx_block_close_line(lines, inside_block)
+            if close is None:
+                _warn(f"{path}: no top-level '{inside_block} {{ }}' block with its "
+                      f"closing brace on its own line, skipping block '{marker}'")
+                return
+            text = "".join(lines[:close]) + wrapped + "".join(lines[close:])
+            self._write_managed_text(path_str, text, mode=mode)
             return
 
         prefix = current
@@ -1754,8 +1812,10 @@ class Driftify:
             "worker_processes": "worker_processes 2;",
         })
         # standard moves nginx to a port outside the stock http_port_t set,
-        # which needs a custom SELinux port label; minimal stays on 8080.
-        nginx_port = NGINX_DRIFT_PORT if self.needs_profile("standard") else 8080
+        # which needs a custom SELinux port label; minimal uses a stock one.
+        # nginx only accepts a server block inside http {}.
+        nginx_port = (NGINX_DRIFT_PORT if self.needs_profile("standard")
+                      else NGINX_MINIMAL_PORT)
         self._append_managed_block(
             "/etc/nginx/nginx.conf",
             "nginx-server-block",
@@ -1767,6 +1827,7 @@ class Driftify:
     }}
 }}""",
             create_if_missing=False,
+            inside_block="http",
         )
         if self.needs_profile("standard") and self._check_command("semanage"):
             _info(f"{_I.SHIELD}  Adding http_port_t SELinux label for port "
