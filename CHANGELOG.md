@@ -21,4 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **sshd port move** (standard, kitchen-sink): driftify no longer sets `Port 2222` or `Port 2200` in `/etc/ssh/sshd_config`, opens those ports in firewalld, or adds an `ssh_port_t` SELinux label for them, and undo no longer tries to remove them. The port move gave inspectah nothing to detect that the other sshd_config directives do not, and on a host that was not reverted it left sshd off port 22, so every ssh connection was refused. `PermitRootLogin no` (standard) and the cipher, MAC, and kex overrides (kitchen-sink) remain.
+- **sshd port move** (standard, kitchen-sink): driftify no longer sets `Port 2222` or `Port 2200` in `/etc/ssh/sshd_config`, opens those ports in firewalld, or adds an `ssh_port_t` SELinux label for them. The port move gave inspectah nothing to detect that the other sshd_config directives do not, and on a host that was not reverted it left sshd off port 22, so every ssh connection was refused. `PermitRootLogin no` (standard) and the cipher, MAC, and kex overrides (kitchen-sink) remain.
+
+### Fixed
+
+- **Undo leaves stale ssh port openings and labels**: undo again removes the 2222/tcp and 2200/tcp firewalld openings and their `ssh_port_t` SELinux labels. driftify no longer creates them, but a host drifted by an older driftify still carries them, and undo had stopped cleaning them up.

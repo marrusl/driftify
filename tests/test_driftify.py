@@ -1557,9 +1557,19 @@ class TestSshdConfigNoPortMove(DriftifyTestCase):
                         self.assertIn(key, merged)
                 self._assert_no_port_commands(commands)
 
-    def test_undo_config_touches_no_ssh_port(self):
-        _, _, commands, _ = self._run("kitchen-sink", "undo_config")
-        self._assert_no_port_commands(commands)
+    def test_undo_config_cleans_up_stale_ssh_port_artifacts(self):
+        # Hosts drifted by a driftify that still moved the port carry these
+        # openings and labels, so undo keeps removing them.
+        with unittest.mock.patch("shutil.which", return_value="/usr/sbin/semanage"):
+            _, _, commands, _ = self._run("minimal", "undo_config")
+        for port in self.MOVED_PORTS:
+            self.assertIn(
+                ["firewall-cmd", "--permanent", f"--remove-port={port}/tcp"],
+                commands)
+            self.assertIn(
+                ["semanage", "port", "-d", "-t", "ssh_port_t", "-p", "tcp", port],
+                commands)
+        self.assertIn(["firewall-cmd", "--reload"], commands)
 
     def test_plan_and_summary_do_not_mention_a_port(self):
         for profile in ("standard", "kitchen-sink"):

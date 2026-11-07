@@ -1254,6 +1254,25 @@ class Driftify:
         self._remove_path("/etc/sysctl.d/hugepages.conf")
         self._remove_path("/etc/sysctl.d/thp.conf")
 
+        # driftify stopped moving the sshd port on 2026-11-07. Hosts drifted
+        # before that still carry the 2222/2200 firewall openings and
+        # ssh_port_t labels, so undo keeps removing them.
+        stale_ssh_ports = ("2222", "2200")
+        for port in stale_ssh_ports:
+            self.run_cmd(
+                ["firewall-cmd", "--permanent", f"--remove-port={port}/tcp"],
+                check=False,
+            )
+        self.run_cmd(["firewall-cmd", "--reload"], check=False)
+
+        import shutil as _shutil
+        if _shutil.which("semanage"):
+            for port in stale_ssh_ports:
+                self.run_cmd(
+                    ["semanage", "port", "-d", "-t", "ssh_port_t", "-p", "tcp", port],
+                    check=False,
+                )
+
     def undo_services(self) -> None:
         _info("Undoing services...")
         self._undo_tuned_profile()
