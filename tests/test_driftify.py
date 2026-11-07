@@ -547,8 +547,7 @@ class TestConfirmation(DriftifyTestCase):
                               skip_sections=["rpm", "network"])
         lines = d._run_description()
         self.assertFalse(any("Install" in l for l in lines))
-        # "Add firewall rules" is the network-section-specific phrase; the
-        # config section may still mention "firewall" for the sshd port change.
+        # "Add firewall rules" is the network-section-specific phrase.
         self.assertFalse(any("Add firewall rules" in l for l in lines))
         self.assertTrue(any("httpd" in l for l in lines))
 
@@ -1505,6 +1504,79 @@ class TestSELinux(DriftifyTestCase):
         self.assertIn("httpd_can_network_connect", output)
         self.assertIn("httpd_can_network_relay", output)
         self.assertIn("/etc/audit/rules.d/driftify.rules", output)
+
+
+class TestSshdConfigNoPortMove(DriftifyTestCase):
+    """driftify drifts sshd_config but never moves the sshd port.
+
+    A moved port proves nothing the other sshd directives do not, and it
+    locks operators and test automation out of a host that was not reverted.
+    """
+
+    SSHD_CONFIG = "/etc/ssh/sshd_config"
+    MOVED_PORTS = ("2222", "2200")
+
+    def _run(self, profile, method):
+        d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+        d._t0 = driftify.time.monotonic()
+        directives = []
+        commands = []
+        d._apply_directives = (
+            lambda path_str, mapping: directives.append((path_str, dict(mapping)))
+        )
+        d.run_cmd = (
+            lambda cmd, check=True, capture=False:
+            commands.append([str(c) for c in cmd])
+        )
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            getattr(d, method)()
+        self._suppress.__enter__()
+        return d, directives, commands, buf.getvalue()
+
+    def _assert_no_port_commands(self, commands):
+        for cmd in commands:
+            joined = " ".join(cmd)
+            self.assertNotIn("ssh_port_t", joined)
+            for port in self.MOVED_PORTS:
+                self.assertNotIn(f"{port}/tcp", joined)
+
+    def test_drift_config_writes_no_port_directive(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                _, directives, commands, _ = self._run(profile, "drift_config")
+                sshd = [m for path, m in directives if path == self.SSHD_CONFIG]
+                self.assertTrue(sshd, "sshd_config should still be drifted")
+                for mapping in sshd:
+                    self.assertNotIn("Port", mapping)
+                merged = {k: v for m in sshd for k, v in m.items()}
+                self.assertEqual(merged["PermitRootLogin"], "PermitRootLogin no")
+                if profile == "kitchen-sink":
+                    for key in ("Ciphers", "MACs", "KexAlgorithms"):
+                        self.assertIn(key, merged)
+                self._assert_no_port_commands(commands)
+
+    def test_undo_config_touches_no_ssh_port(self):
+        _, _, commands, _ = self._run("kitchen-sink", "undo_config")
+        self._assert_no_port_commands(commands)
+
+    def test_plan_and_summary_do_not_mention_a_port(self):
+        for profile in ("standard", "kitchen-sink"):
+            with self.subTest(profile=profile):
+                d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+                d._t0 = driftify.time.monotonic()
+                plan = "\n".join(d._run_description())
+                self._suppress.__exit__(None, None, None)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    d._print_summary()
+                self._suppress.__enter__()
+                for text in (plan, buf.getvalue()):
+                    self.assertIn("sshd_config", text)
+                    self.assertNotIn("Port", text)
+                    for port in self.MOVED_PORTS:
+                        self.assertNotIn(port, text)
 
 
 class TestFedoraSupport(DriftifyTestCase):

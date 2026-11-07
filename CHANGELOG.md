@@ -17,3 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`run-fleet-test.sh` scans beyond the default roots** — each scan now passes `--scan-path /apps/reporting` and `--scan-home appuser`, without which the new `/apps` venv and the existing appuser home environments never reach the fleet tarballs.
+
+### Removed
+
+- **sshd port move** (standard, kitchen-sink): driftify no longer sets `Port 2222` or `Port 2200` in `/etc/ssh/sshd_config`, opens those ports in firewalld, or adds an `ssh_port_t` SELinux label for them, and undo no longer tries to remove them. The port move gave inspectah nothing to detect that the other sshd_config directives do not, and on a host that was not reverted it left sshd off port 22, so every ssh connection was refused. `PermitRootLogin no` (standard) and the cipher, MAC, and kex overrides (kitchen-sink) remain.

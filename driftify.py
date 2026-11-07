@@ -829,7 +829,7 @@ class Driftify:
             cfgs += "; modify RPM-owned configs (httpd, nginx"
             if self.needs_profile("standard"):
                 cfgs += (
-                    ", sshd Port\u21922222, chrony; create /etc/myapp/database.conf"
+                    ", sshd PermitRootLogin, chrony; create /etc/myapp/database.conf"
                     "; nsswitch +sss, SSSD/Kerberos, alternatives python3"
                     "; IPA certs, keytabs, SSSD cache"
                     "; PAM faillock, custom PAM drop-in, authselect"
@@ -840,7 +840,7 @@ class Driftify:
                 )
             if self.needs_profile("kitchen-sink"):
                 cfgs += (
-                    "; sshd Port\u21922200 + cipher/MAC/kex overrides"
+                    "; sshd cipher/MAC/kex overrides"
                     "; chrony corp NTP servers; httpd MaxRequestWorkers 512"
                     "; database.conf overwritten; limits, auditd"
                     "; nsswitch +winbind, AD/winbind smb.conf, LDAP cert"
@@ -853,15 +853,13 @@ class Driftify:
             lines.append(cfgs)
             if self.needs_profile("standard"):
                 lines.append(
-                    f"{_I.WARN}  sshd_config will be modified: Port \u2192 2222, "
-                    "PermitRootLogin \u2192 no "
-                    "\u2014 firewall and SELinux label updated; "
+                    f"{_I.WARN}  sshd_config will be modified: PermitRootLogin \u2192 no; "
                     "takes effect on next sshd restart or reboot"
                 )
             if self.needs_profile("kitchen-sink"):
                 lines.append(
-                    f"{_I.WARN}  sshd_config Port further overridden \u2192 2200 (kitchen-sink); "
-                    "firewall and SELinux label updated for 2200"
+                    f"{_I.WARN}  sshd_config further modified (kitchen-sink): "
+                    "Ciphers, MACs, KexAlgorithms overridden"
                 )
 
         if "network" in active:
@@ -1239,27 +1237,6 @@ class Driftify:
         self._remove_path("/etc/tuned/myapp")
         self._remove_path("/etc/sysctl.d/hugepages.conf")
         self._remove_path("/etc/sysctl.d/thp.conf")
-
-        self.run_cmd(
-            ["firewall-cmd", "--permanent", "--remove-port=2222/tcp"],
-            check=False,
-        )
-        self.run_cmd(
-            ["firewall-cmd", "--permanent", "--remove-port=2200/tcp"],
-            check=False,
-        )
-        self.run_cmd(["firewall-cmd", "--reload"], check=False)
-
-        import shutil as _shutil
-        if _shutil.which("semanage"):
-            self.run_cmd(
-                ["semanage", "port", "-d", "-t", "ssh_port_t", "-p", "tcp", "2222"],
-                check=False,
-            )
-            self.run_cmd(
-                ["semanage", "port", "-d", "-t", "ssh_port_t", "-p", "tcp", "2200"],
-                check=False,
-            )
 
     def undo_services(self) -> None:
         _info("Undoing services...")
@@ -1778,29 +1755,7 @@ log_level = info
         if self.needs_profile("standard"):
             self._apply_directives("/etc/ssh/sshd_config", {
                 "PermitRootLogin": "PermitRootLogin no",
-                "Port":            "Port 2222",
             })
-            # Open port 2222 in firewalld so SSH is reachable after sshd restarts.
-            # drift_network opens 8080/tcp but not the new SSH port, so we handle
-            # it here alongside the config change that requires it.
-            _info(f"{_I.GLOBE}  Opening 2222/tcp in firewalld for SSH")
-            self.run_cmd(
-                ["firewall-cmd", "--permanent", "--add-port=2222/tcp"],
-                check=False,
-            )
-            self.run_cmd(["firewall-cmd", "--reload"], check=False)
-            # Add the SELinux port label so sshd can bind to 2222.  semanage may
-            # not be present on every minimal install; skip gracefully if absent.
-            import shutil as _shutil_semanage
-            if _shutil_semanage.which("semanage"):
-                _info(f"{_I.SHIELD}  Adding ssh_port_t SELinux label for port 2222")
-                self.run_cmd(
-                    ["semanage", "port", "-a", "-t", "ssh_port_t", "-p", "tcp", "2222"],
-                    check=False,
-                )
-            else:
-                _warn("semanage not found — skipping ssh_port_t label for 2222"
-                      " (install policycoreutils-python-utils if needed)")
             self._append_managed_block(
                 "/etc/chrony.conf",
                 "chrony-servers",
@@ -2083,30 +2038,13 @@ export LOG_LEVEL=info
                 "-w /etc/sudoers -p wa -k sudoers-changes\n",
             )
 
-            # Override sshd port to 2200 (replaces standard's 2222) and
-            # add cipher/MAC/kex hardening — produces a cross-profile variant.
+            # Add cipher/MAC/kex hardening on top of standard's sshd_config
+            # change — produces a cross-profile variant.
             self._apply_directives("/etc/ssh/sshd_config", {
-                "Port":          "Port 2200",
                 "Ciphers":       "Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com",
                 "MACs":          "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com",
                 "KexAlgorithms": "KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org",
             })
-            _info(f"{_I.GLOBE}  Opening 2200/tcp in firewalld for SSH (kitchen-sink port)")
-            self.run_cmd(
-                ["firewall-cmd", "--permanent", "--add-port=2200/tcp"],
-                check=False,
-            )
-            self.run_cmd(["firewall-cmd", "--reload"], check=False)
-            import shutil as _shutil_semanage
-            if _shutil_semanage.which("semanage"):
-                _info(f"{_I.SHIELD}  Adding ssh_port_t SELinux label for port 2200")
-                self.run_cmd(
-                    ["semanage", "port", "-a", "-t", "ssh_port_t", "-p", "tcp", "2200"],
-                    check=False,
-                )
-            else:
-                _warn("semanage not found — skipping ssh_port_t label for 2200"
-                      " (install policycoreutils-python-utils if needed)")
 
             # Additional NTP servers (different from standard's public pool) —
             # distinct marker keeps both blocks present, making the file differ
@@ -4193,12 +4131,11 @@ domain=INTERNAL
         if "config" not in self.skip and self.needs_profile("standard"):
             print()
             _warn("WARNING: sshd_config was modified \u2014 "
-                  "Port changed to 2222, PermitRootLogin set to no.")
-            _warn("         firewall-cmd and semanage updated for port 2222.")
+                  "PermitRootLogin set to no.")
             _warn("         Changes take effect on next sshd restart or reboot.")
         if "config" not in self.skip and self.needs_profile("kitchen-sink"):
-            _warn("         Kitchen-sink: Port further overridden to 2200; "
-                  "firewall-cmd and semanage updated for port 2200.")
+            _warn("         Kitchen-sink: Ciphers, MACs, KexAlgorithms "
+                  "also overridden.")
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")

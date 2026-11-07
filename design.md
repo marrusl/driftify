@@ -128,7 +128,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 |---|---|---|
 | Modify `/etc/httpd/conf/httpd.conf` — change `Listen`, `ServerName`, `MaxRequestWorkers` | Modified RPM-owned config (triggers `rpm -Va`) | minimal |
 | Modify `/etc/nginx/nginx.conf` — change `worker_processes`, add `server` block | Modified RPM-owned config | minimal |
-| Modify `/etc/ssh/sshd_config` — disable root login, change port | Modified RPM-owned config (security-relevant) | standard |
+| Modify `/etc/ssh/sshd_config` — disable root login; kitchen-sink also overrides ciphers, MACs, and kex | Modified RPM-owned config (security-relevant) | standard |
 | Modify `/etc/chrony.conf` — add NTP servers | Modified RPM-owned config | standard |
 | Modify `/etc/security/limits.conf` — add nofile limits | Modified RPM-owned config | kitchen-sink |
 | Modify `/etc/audit/auditd.conf` — increase log size | Modified RPM-owned config | kitchen-sink |
