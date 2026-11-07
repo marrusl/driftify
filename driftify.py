@@ -720,8 +720,9 @@ class Driftify:
                           directives: dict) -> None:
         """Apply multiple key→line directive replacements to a file in one pass.
 
-        Each key is matched against commented or uncommented lines; the first
-        match is replaced with the supplied line.  Unmatched keys are appended.
+        Each key is matched against live lines only; the first match is
+        replaced with the supplied line.  Commented examples are left alone,
+        so a key with no live line is appended.
         """
         path = Path(path_str)
         if not path.exists():
@@ -737,7 +738,7 @@ class Driftify:
         for idx, existing in enumerate(lines):
             for key, line in list(remaining.items()):
                 key_re = re.compile(
-                    r"^\s*(#\s*)?" + re.escape(key) + r"(\s|=)"
+                    r"^\s*" + re.escape(key) + r"(\s|=)"
                 )
                 if key_re.match(existing):
                     lines[idx] = line

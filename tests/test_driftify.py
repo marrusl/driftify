@@ -1738,6 +1738,23 @@ http {
 
 """
 
+# Excerpt of the stock RHEL 9 httpd.conf: the commented Listen example comes
+# before the live Listen 80, and ServerName exists only as a comment.
+STOCK_HTTPD_CONF = """\
+ServerRoot "/etc/httpd"
+
+#
+#Listen 12.34.56.78:80
+Listen 80
+
+#ServerName www.example.com:80
+
+<IfModule mime_magic_module>
+    MIMEMagicFile conf/magic
+</IfModule>
+"""
+
+
 def _nginx_context_of(text, needle):
     """Return the names of the nginx blocks open at the line containing needle."""
     stack, words = [], []
@@ -1839,6 +1856,96 @@ class TestNginxBlockInsideHttp(RedirectedFixtureTestCase):
                 nginx = [kw for p, m, kw in calls if m == "nginx-server-block"]
                 self.assertEqual(len(nginx), 1)
                 self.assertEqual(nginx[0].get("inside_block"), "http")
+
+
+class TestApplyDirectivesLiveLines(RedirectedFixtureTestCase):
+    """_apply_directives replaces live directives and leaves comments alone."""
+
+    def _apply(self, td, name, text, directives):
+        d, _ = self._build_redirected_drifter(td, "standard")
+        p = Path(td) / name
+        p.write_text(text)
+        d._apply_directives(str(p), directives)
+        return p.read_text()
+
+    def test_live_listen_replaced_not_the_commented_example(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = self._apply(td, "httpd.conf", STOCK_HTTPD_CONF,
+                              {"Listen": "Listen 8080"})
+        listens = [l for l in out.splitlines() if re.match(r"\s*Listen\b", l)]
+        self.assertEqual(listens, ["Listen 8080"])
+        self.assertIn("#Listen 12.34.56.78:80", out)
+
+    def test_commented_only_directive_is_appended(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = self._apply(td, "httpd.conf", STOCK_HTTPD_CONF,
+                              {"ServerName": "ServerName driftify.local"})
+        self.assertIn("#ServerName www.example.com:80", out)
+        self.assertTrue(out.endswith("ServerName driftify.local\n"))
+
+    def test_sshd_commented_default_is_kept_and_directive_appended(self):
+        sshd = ("#Port 22\n#PermitRootLogin prohibit-password\n"
+                "#StrictModes yes\nPasswordAuthentication yes\n")
+        with tempfile.TemporaryDirectory() as td:
+            out = self._apply(td, "sshd_config", sshd,
+                              {"PermitRootLogin": "PermitRootLogin no"})
+        self.assertIn("#PermitRootLogin prohibit-password\n", out)
+        live = [l for l in out.splitlines() if l.startswith("PermitRootLogin")]
+        self.assertEqual(live, ["PermitRootLogin no"])
+
+    def test_indented_live_directive_is_replaced(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = self._apply(td, "auditd.conf", "  max_log_file = 8\n# max_log_file = 1\n",
+                              {"max_log_file": "max_log_file = 64"})
+        self.assertEqual(out, "max_log_file = 64\n# max_log_file = 1\n")
+
+
+class TestHttpdNginxPortsDisjoint(RedirectedFixtureTestCase):
+    """httpd and nginx never claim the same port, in any profile."""
+
+    @staticmethod
+    def _ports(text, keyword):
+        ports = set()
+        for line in text.splitlines():
+            m = re.match(rf"\s*{keyword}\s+([^\s;]+)", line)
+            if m:
+                ports.add(m.group(1).rsplit(":", 1)[-1])
+        return ports
+
+    def test_no_shared_port_per_profile(self):
+        for profile in ("minimal", "standard", "kitchen-sink"):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as td:
+                # Capture what drift_config asks for, then apply it with the
+                # real writers to stock-layout files.
+                d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+                directives, blocks = [], []
+                d._apply_directives = (
+                    lambda path_str, mapping: directives.append((path_str, mapping)))
+                d._append_managed_block = (
+                    lambda path_str, marker, block, **kw:
+                    blocks.append((path_str, marker, block, kw)))
+                d.run_cmd = lambda *a, **k: None
+                d.drift_config()
+
+                real, map_path = self._build_redirected_drifter(td, profile)
+                httpd = map_path("/etc/httpd/conf/httpd.conf")
+                nginx = map_path("/etc/nginx/nginx.conf")
+                httpd.parent.mkdir(parents=True)
+                nginx.parent.mkdir(parents=True)
+                httpd.write_text(STOCK_HTTPD_CONF)
+                nginx.write_text(STOCK_NGINX_CONF)
+                for path_str, mapping in directives:
+                    if path_str in ("/etc/httpd/conf/httpd.conf", "/etc/nginx/nginx.conf"):
+                        real._apply_directives(str(map_path(path_str)), mapping)
+                for path_str, marker, block, kw in blocks:
+                    if path_str in ("/etc/httpd/conf/httpd.conf", "/etc/nginx/nginx.conf"):
+                        real._append_managed_block(path_str, marker, block, **kw)
+
+                httpd_ports = self._ports(httpd.read_text(), "Listen")
+                nginx_ports = self._ports(nginx.read_text(), "listen")
+                self.assertEqual(httpd_ports, {"8080"})
+                self.assertIn("80", nginx_ports)
+                self.assertEqual(httpd_ports & nginx_ports, set())
 
 
 class TestFedoraSupport(DriftifyTestCase):
