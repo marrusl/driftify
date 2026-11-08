@@ -879,11 +879,6 @@ class Driftify:
                     f"drop-in, {SSHD_DRIFTIFY_DROPIN}, so sshd enforces it "
                     "from its next restart or reboot"
                 )
-            if self.needs_profile("kitchen-sink"):
-                lines.append(
-                    f"{_I.WARN}  sshd_config further modified (kitchen-sink): "
-                    "Ciphers, MACs, KexAlgorithms overridden"
-                )
 
         if "network" in active:
             fw = "http, https, 8080/tcp"
@@ -1798,14 +1793,6 @@ export LOG_LEVEL=info
                 "-w /etc/passwd -p wa -k passwd-changes\n"
                 "-w /etc/sudoers -p wa -k sudoers-changes\n",
             )
-
-            # Add cipher/MAC/kex hardening on top of standard's sshd_config
-            # change — produces a cross-profile variant.
-            self._apply_directives("/etc/ssh/sshd_config", {
-                "Ciphers":       "Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com",
-                "MACs":          "MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com",
-                "KexAlgorithms": "KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org",
-            })
 
             # Additional NTP servers (different from standard's public pool) —
             # distinct marker keeps both blocks present, making the file differ
@@ -3798,9 +3785,6 @@ domain=INTERNAL
             _warn("WARNING: PermitRootLogin no was written to sshd_config and to "
                   f"the early drop-in {SSHD_DRIFTIFY_DROPIN}.")
             _warn("         sshd enforces it from its next restart or reboot.")
-        if "config" not in self.skip and self.needs_profile("kitchen-sink"):
-            _warn("         Kitchen-sink: Ciphers, MACs, KexAlgorithms "
-                  "also overridden.")
 
         print()
         _info(f"{_I.STAMP}  Stamp file: {STAMP_PATH}")

@@ -1430,9 +1430,8 @@ class TestSshdConfigNoPortMove(DriftifyTestCase):
                     self.assertNotIn("Port", mapping)
                 merged = {k: v for m in sshd for k, v in m.items()}
                 self.assertEqual(merged["PermitRootLogin"], "PermitRootLogin no")
-                if profile == "kitchen-sink":
-                    for key in ("Ciphers", "MACs", "KexAlgorithms"):
-                        self.assertIn(key, merged)
+                for key in ("Ciphers", "MACs", "KexAlgorithms"):
+                    self.assertNotIn(key, merged)
                 self._assert_no_port_commands(commands)
 
     def test_plan_and_summary_do_not_mention_a_port(self):

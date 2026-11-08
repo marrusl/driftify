@@ -129,7 +129,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | Modify `/etc/httpd/conf/httpd.conf` — change `Listen`, `ServerName`, `MaxRequestWorkers` | Modified RPM-owned config (triggers `rpm -Va`) | minimal |
 | Modify `/etc/nginx/nginx.conf` — change `worker_processes`, add a `server` block on `listen 81` inside `http {}` | Modified RPM-owned config | minimal |
 | Move the nginx `server` block from `listen 81` to `listen 8081` | Modified RPM-owned config, paired with a custom SELinux port label | standard |
-| Modify `/etc/ssh/sshd_config` — disable root login; kitchen-sink also overrides ciphers, MACs, and kex | Modified RPM-owned config (security-relevant) | standard |
+| Modify `/etc/ssh/sshd_config` — disable root login | Modified RPM-owned config (security-relevant) | standard |
 | Modify `/etc/chrony.conf` — add NTP servers | Modified RPM-owned config | standard |
 | Modify `/etc/security/limits.conf` — add nofile limits | Modified RPM-owned config | kitchen-sink |
 | Modify `/etc/audit/auditd.conf` — increase log size | Modified RPM-owned config | kitchen-sink |
@@ -715,7 +715,7 @@ Everything driftify creates, so you can audit it at a glance:
 ```
 /etc/httpd/conf/httpd.conf                       # Apache config tuning
 /etc/nginx/nginx.conf                            # Nginx config tuning
-/etc/ssh/sshd_config                             # SSH hardening (standard+)
+/etc/ssh/sshd_config                             # Disables root login (standard+)
 /etc/chrony.conf                                  # NTP servers (standard+)
 /etc/security/limits.conf                        # Resource limits (kitchen-sink)
 /etc/audit/auditd.conf                           # Audit config (kitchen-sink)
