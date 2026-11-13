@@ -723,6 +723,10 @@ class Driftify:
                     if not self.quiet:
                         _info(f"No change needed: {path}")
                     return
+        elif path.is_symlink():
+            # The O_EXCL create below would refuse the link and abort the run.
+            _warn(f"{path} is a dangling symlink, not writing through it")
+            return
         if self.dry_run:
             action = "update" if path.exists() else "create"
             _dry(f"{action} file {path}")

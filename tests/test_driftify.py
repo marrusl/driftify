@@ -164,6 +164,29 @@ class TestHelpersAndDryRun(DriftifyTestCase):
             self.assertEqual(file_path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(file_path.read_text(), "new\n")
 
+    def test_write_managed_text_skips_a_dangling_symlink(self):
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run), tempfile.TemporaryDirectory() as td:
+                d = self._build_non_dry_with_temp_stamp(td)
+                d.dry_run = dry_run
+                target = Path(td) / "elsewhere" / "secret.conf"
+                link = Path(td) / "secret.conf"
+                link.symlink_to(target)
+                self._suppress.__exit__(None, None, None)
+                buf = io.StringIO()
+                try:
+                    with redirect_stdout(buf):
+                        d._write_managed_text(str(link), "key\n", mode=0o600)
+                finally:
+                    self._suppress.__enter__()
+                output = buf.getvalue()
+                self.assertTrue(link.is_symlink())
+                self.assertFalse(link.exists())
+                self.assertFalse(target.parent.exists())
+                self.assertIn(f"{link} is a dangling symlink, not writing through it",
+                              output)
+                self.assertNotIn("[DRY RUN]", output)
+
     def test_append_managed_block_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
             d = self._build_non_dry_with_temp_stamp(td)
@@ -2468,6 +2491,37 @@ class TestUnitStates(RedirectedFixtureTestCase):
                 self.assertFalse(any("wg-quick@wg0" in t for t in self._planted(d)))
                 self.assertTrue(any("wg-quick@wg0" in t and "wg genkey failed" in t
                                     for t in self._skipped(d)))
+
+    def test_dangling_symlink_at_a_local_unit_is_skipped_not_claimed(self):
+        local = ["driftify-static.service", "driftify-also-main.service",
+                 "driftify-also-member.service", "driftify-upheld.service"]
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink", units=EL10_UNITS,
+                                              also=REAL_ALSO, version=257)
+            fake.units["driftify-upheld.service"] = ["disabled", "disabled"]
+            links = [map_path(f"/etc/systemd/system/{u}") for u in local]
+            links[0].parent.mkdir(parents=True)
+            for link in links:
+                link.symlink_to(Path(td) / "gone" / link.name)
+            # systemd cannot load a unit whose file is a dangling link, so
+            # is-enabled reports no state for it.
+            original = fake.query
+            fake.query = lambda args: (
+                "" if args[0] == "is-enabled" and args[-1] in local
+                and not map_path(f"/etc/systemd/system/{args[-1]}").exists()
+                else original(args))
+            d._systemctl_query = fake.query
+            d._drift_unit_states()
+            for link in links:
+                self.assertTrue(link.is_symlink(), link)
+                self.assertFalse(link.exists(), link)
+            self.assertFalse((Path(td) / "gone").exists())
+        for unit in local:
+            self.assertFalse(any(unit in t for t in self._planted(d)), unit)
+        skipped = "\n".join(self._skipped(d))
+        for unit in ("driftify-static.service", "driftify-also-main.service",
+                     "driftify-upheld.service"):
+            self.assertIn(f"{unit} is unknown", skipped)
 
     def test_keeping_an_existing_file_is_silent_when_quiet(self):
         with tempfile.TemporaryDirectory() as td:
