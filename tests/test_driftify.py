@@ -2021,3 +2021,530 @@ class TestPrintSummary(DriftifyTestCase):
         # Scheduled section should list cron files
         self.assertIn("2 cron files", output)
 
+
+
+class FakeSystemd:
+    """A small stand-in for systemctl: enable/disable follow Also=, mask
+    replaces the state, and is-enabled reads hand-made links from the temp
+    tree. Enough to check what the unit-state cases run and what they claim."""
+
+    def __init__(self, root, units=None, also=None, version=257):
+        self.root = Path(root)
+        # unit -> [state, preset]
+        self.units = {k: list(v) for k, v in (units or {}).items()}
+        self.also = also or {}
+        self.version = version
+        self.instances = {}
+        self.default = "multi-user.target"
+        self.commands = []
+        self.genkey_calls = 0
+
+    def _closure(self, unit):
+        seen, todo = [], [unit]
+        while todo:
+            u = todo.pop(0)
+            if u in seen:
+                continue
+            seen.append(u)
+            todo += self.also.get(u, [])
+        return seen
+
+    def _set(self, unit, state):
+        if "@" in unit and not unit.endswith("@.service"):
+            self.instances[unit] = state
+            return
+        entry = self.units.setdefault(unit, ["disabled", "disabled"])
+        if entry[0] == "static" and state != "masked":
+            return
+        entry[0] = state
+
+    def run(self, cmd, check=True, capture=False):
+        cmd = [str(c) for c in cmd]
+        self.commands.append(cmd)
+        stdout = ""
+        if cmd[:2] == ["wg", "genkey"]:
+            self.genkey_calls += 1
+            stdout = "DRIFTIFYFAKEKEYAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+        elif cmd[0] == "systemctl" and len(cmd) > 2:
+            verb, unit = cmd[1], cmd[2]
+            if verb == "enable":
+                for u in self._closure(unit):
+                    self._set(u, "enabled")
+            elif verb == "disable":
+                for u in self._closure(unit):
+                    self._set(u, "disabled")
+            elif verb == "mask":
+                self._set(unit, "masked")
+            elif verb == "set-default":
+                self.default = unit
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout)
+
+    def _hand_linked(self, unit):
+        base = self.root / "etc" / "systemd" / "system"
+        return any(p.is_symlink() for p in base.glob(f"*.wants/{unit}"))
+
+    def query(self, args):
+        if args[0] == "--version":
+            return f"systemd {self.version} (fake)\n+PAM\n"
+        if args[0] == "get-default":
+            return self.default + "\n"
+        unit = args[-1]
+        if args[0] == "list-unit-files":
+            if unit in self.units:
+                state, preset = self.units[unit]
+                return f"{unit} {state} {preset}\n"
+            return ""
+        if args[0] == "is-enabled":
+            if unit in self.instances:
+                return self.instances[unit] + "\n"
+            if unit in self.units and self.units[unit][0] != "static":
+                return self.units[unit][0] + "\n"
+            if self._hand_linked(unit):
+                return "enabled\n"
+            if unit in self.units:
+                return "static\n"
+            return ""
+        raise AssertionError(f"unexpected systemctl query {args}")
+
+    def ran(self, *cmd):
+        return list(cmd) in self.commands
+
+    def index(self, *cmd):
+        return self.commands.index(list(cmd))
+
+
+# Unit states as the packages leave them, from real RHEL 9 and RHEL 10 hosts
+# after dnf install (state, preset).
+EL9_UNITS = {
+    "tmp.mount": ("disabled", "disabled"),
+    "getty@.service": ("enabled", "enabled"),
+    "graphical.target": ("static", "-"),
+    "cockpit.socket": ("disabled", "disabled"),
+    "cups.service": ("enabled", "enabled"),
+    "cups.socket": ("enabled", "enabled"),
+    "cups.path": ("enabled", "enabled"),
+    "iscsid.service": ("disabled", "disabled"),
+    "iscsid.socket": ("enabled", "enabled"),
+    "virtnetworkd.service": ("disabled", "disabled"),
+    "virtnetworkd.socket": ("enabled", "enabled"),
+    "virtnetworkd-ro.socket": ("enabled", "enabled"),
+    "virtnetworkd-admin.socket": ("enabled", "enabled"),
+    "wg-quick@.service": ("disabled", "disabled"),
+    "multipathd.service": ("enabled", "enabled"),
+    "multipathd.socket": ("enabled", "disabled"),
+}
+EL10_UNITS = dict(EL9_UNITS)
+EL10_UNITS.update({
+    "cockpit.socket": ("enabled", "enabled"),
+    "multipathd.socket": ("static", "-"),
+})
+VIRTNETWORKD_SOCKETS = [
+    "virtnetworkd.socket", "virtnetworkd-ro.socket", "virtnetworkd-admin.socket",
+]
+REAL_ALSO = {
+    "cups.service": ["cups.socket", "cups.path"],
+    "iscsid.service": ["iscsid.socket"],
+    "virtnetworkd.service": list(VIRTNETWORKD_SOCKETS),
+    "virtnetworkd.socket": ["virtnetworkd-ro.socket", "virtnetworkd-admin.socket"],
+    "virtnetworkd-ro.socket": ["virtnetworkd.socket", "virtnetworkd-admin.socket"],
+    "virtnetworkd-admin.socket": ["virtnetworkd.socket", "virtnetworkd-ro.socket"],
+    "driftify-also-main.service": ["driftify-also-member.service"],
+}
+EL9_ALSO = dict(REAL_ALSO, **{"multipathd.service": ["multipathd.socket"]})
+
+
+class TestUnitStates(RedirectedFixtureTestCase):
+    """The unit-state cases: masks, instances, hand-made links, Also=,
+    sockets against their preset, .upholds and the default target."""
+
+    def _drifter(self, td, profile, units=EL9_UNITS, also=EL9_ALSO, version=252):
+        d, map_path = self._build_redirected_drifter(td, profile)
+        fake = FakeSystemd(td, units, also, version)
+        d.run_cmd = fake.run
+        d._systemctl_query = fake.query
+        original_symlink = d._ensure_symlink
+        d._ensure_symlink = (
+            lambda link, target: original_symlink(str(map_path(link)), target)
+        )
+        original_if_absent = d._write_if_absent
+        d._write_if_absent = (
+            lambda path_str, make_content, mode=0o644:
+            original_if_absent(str(map_path(path_str)), make_content, mode)
+        )
+        return d, map_path, fake
+
+    def _planted(self, d):
+        return [text for status, text in d._unit_cases if status == "planted"]
+
+    def _skipped(self, d):
+        return [text for status, text in d._unit_cases if status != "planted"]
+
+    # ── minimal ──────────────────────────────────────────────────────────
+
+    def test_minimal_masks_tmp_mount_and_enables_getty_instance(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "minimal")
+            d._drift_unit_states()
+        self.assertTrue(fake.ran("systemctl", "mask", "tmp.mount"))
+        self.assertTrue(fake.ran("systemctl", "enable", "getty@tty2.service"))
+        planted = "\n".join(self._planted(d))
+        self.assertIn("tmp.mount masked", planted)
+        self.assertIn("/etc/systemd/system/tmp.mount -> /dev/null", planted)
+        self.assertIn("getty@tty2.service enabled", planted)
+        self.assertIn("/etc/systemd/system/getty.target.wants/getty@tty2.service", planted)
+
+    def test_minimal_plants_nothing_from_higher_profiles(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "minimal")
+            d._drift_unit_states()
+            self.assertFalse(map_path("/etc/systemd/system/driftify-static.service").exists())
+            self.assertFalse(map_path("/etc/systemd/system/driftify-also-main.service").exists())
+        flat = [" ".join(c) for c in fake.commands]
+        for word in ("cockpit", "cups", "iscsid", "virtnetworkd", "wg-quick",
+                     "multipathd", "set-default", "driftify-"):
+            self.assertFalse(any(word in c for c in flat), word)
+        self.assertEqual(len(self._planted(d)), 2)
+
+    def test_minimal_skips_absent_tmp_mount_without_claiming_it(self):
+        units = {k: v for k, v in EL9_UNITS.items() if k != "tmp.mount"}
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "minimal", units=units)
+            d._drift_unit_states()
+        self.assertFalse(fake.ran("systemctl", "mask", "tmp.mount"))
+        self.assertFalse(any("tmp.mount" in t for t in self._planted(d)))
+        self.assertTrue(any("tmp.mount" in t for t in self._skipped(d)))
+
+    # ── standard ─────────────────────────────────────────────────────────
+
+    def test_standard_static_unit_gets_a_hand_made_link(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "standard")
+            d._drift_unit_states()
+            unit = map_path("/etc/systemd/system/driftify-static.service")
+            link = map_path(
+                "/etc/systemd/system/multi-user.target.wants/driftify-static.service")
+            content = unit.read_text()
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), "/etc/systemd/system/driftify-static.service")
+        self.assertNotIn("[Install]", content)
+        self.assertIn("Type=oneshot", content)
+        self.assertIn("ExecStart=/bin/true", content)
+        # A static unit cannot be enabled with systemctl; the link is made by hand.
+        self.assertFalse(fake.ran("systemctl", "enable", "driftify-static.service"))
+        self.assertTrue(any(
+            "driftify-static.service enabled" in t
+            and "multi-user.target.wants/driftify-static.service" in t
+            for t in self._planted(d)))
+
+    def test_standard_also_pair_enabled_through_main_unit(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "standard")
+            d._drift_unit_states()
+            main = map_path("/etc/systemd/system/driftify-also-main.service").read_text()
+            member = map_path("/etc/systemd/system/driftify-also-member.service").read_text()
+        self.assertIn("WantedBy=multi-user.target", main)
+        self.assertIn("Also=driftify-also-member.service", main)
+        self.assertIn("[Install]", member)
+        self.assertIn("WantedBy=multi-user.target", member)
+        for content in (main, member):
+            self.assertIn("ExecStart=/bin/true", content)
+        self.assertTrue(fake.ran("systemctl", "enable", "driftify-also-main.service"))
+        self.assertFalse(fake.ran("systemctl", "enable", "driftify-also-member.service"))
+        planted = "\n".join(self._planted(d))
+        self.assertIn("driftify-also-member.service enabled", planted)
+
+    def test_standard_cockpit_socket_enabled_where_preset_is_disable(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "standard", units=EL9_UNITS)
+            d._drift_unit_states()
+        self.assertTrue(fake.ran("systemctl", "enable", "cockpit.socket"))
+        self.assertFalse(fake.ran("systemctl", "disable", "cockpit.socket"))
+        self.assertTrue(any("cockpit.socket enabled" in t for t in self._planted(d)))
+
+    def test_standard_cockpit_socket_disabled_where_preset_is_enable(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "standard", units=EL10_UNITS, version=257)
+            d._drift_unit_states()
+        self.assertTrue(fake.ran("systemctl", "disable", "cockpit.socket"))
+        self.assertFalse(fake.ran("systemctl", "enable", "cockpit.socket"))
+        self.assertTrue(any("cockpit.socket disabled" in t for t in self._planted(d)))
+
+    def test_standard_cockpit_follows_preset_not_current_state(self):
+        # Already enabled by an earlier run on an EL9 host: still enable.
+        units = dict(EL9_UNITS, **{"cockpit.socket": ("enabled", "disabled")})
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "standard", units=units)
+            d._drift_unit_states()
+        self.assertFalse(fake.ran("systemctl", "disable", "cockpit.socket"))
+        self.assertTrue(any("cockpit.socket enabled" in t for t in self._planted(d)))
+
+    def test_standard_cockpit_absent_is_skipped(self):
+        units = {k: v for k, v in EL9_UNITS.items() if k != "cockpit.socket"}
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "standard", units=units)
+            d._drift_unit_states()
+        self.assertFalse(any("cockpit" in " ".join(c) for c in fake.commands))
+        self.assertTrue(any("cockpit.socket" in t for t in self._skipped(d)))
+
+    def test_standard_cockpit_without_preset_column_is_skipped(self):
+        # EL8's systemd 239 prints no preset column.
+        units = dict(EL9_UNITS)
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "standard", units=units)
+            original = fake.query
+            fake.query = lambda args: (
+                "cockpit.socket disabled\n"
+                if args[0] == "list-unit-files" and args[-1] == "cockpit.socket"
+                else original(args))
+            d._systemctl_query = fake.query
+            d._drift_unit_states()
+        self.assertFalse(any("cockpit" in " ".join(c) for c in fake.commands))
+        self.assertTrue(any("cockpit.socket" in t for t in self._skipped(d)))
+
+    def test_standard_plants_no_kitchen_sink_case(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "standard")
+            d._drift_unit_states()
+            self.assertFalse(map_path("/etc/systemd/system/driftify-upheld.service").exists())
+        flat = [" ".join(c) for c in fake.commands]
+        for word in ("cups", "iscsid", "virtnetworkd", "wg-quick", "multipathd",
+                     "set-default", "genkey"):
+            self.assertFalse(any(word in c for c in flat), word)
+
+    # ── kitchen-sink ─────────────────────────────────────────────────────
+
+    def _assert_pair(self, fake, on, off):
+        self.assertLess(fake.index("systemctl", "enable", on),
+                        fake.index("systemctl", "disable", off))
+
+    def test_kitchen_sink_service_on_socket_off_pairs(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink")
+            d._drift_unit_states()
+        self._assert_pair(fake, "cups.service", "cups.socket")
+        self._assert_pair(fake, "iscsid.service", "iscsid.socket")
+        self._assert_pair(fake, "virtnetworkd.service", "virtnetworkd-ro.socket")
+        self.assertEqual(fake.units["cups.service"][0], "enabled")
+        self.assertEqual(fake.units["cups.path"][0], "enabled")
+        self.assertEqual(fake.units["cups.socket"][0], "disabled")
+        self.assertEqual(fake.units["iscsid.service"][0], "enabled")
+        self.assertEqual(fake.units["iscsid.socket"][0], "disabled")
+        self.assertEqual(fake.units["virtnetworkd.service"][0], "enabled")
+        for sock in VIRTNETWORKD_SOCKETS:
+            self.assertEqual(fake.units[sock][0], "disabled", sock)
+        planted = "\n".join(self._planted(d))
+        self.assertIn("cups.socket disabled", planted)
+        self.assertIn("iscsid.socket disabled", planted)
+        self.assertIn("virtnetworkd-admin.socket", planted)
+        self.assertFalse(any("--now" in c for c in fake.commands))
+
+    def test_kitchen_sink_wireguard_instance_with_generated_key(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink")
+            d._drift_unit_states()
+            conf = map_path(driftify.WG_CONF_PATH)
+            mode = conf.stat().st_mode & 0o777
+            content = conf.read_text()
+        self.assertEqual(mode, 0o600)
+        self.assertIn("PrivateKey = DRIFTIFYFAKEKEY", content)
+        self.assertEqual(fake.genkey_calls, 1)
+        self.assertTrue(fake.ran("systemctl", "enable", "wg-quick@wg0.service"))
+        self.assertFalse(any(c[:2] == ["systemctl", "start"] for c in fake.commands))
+        self.assertTrue(any("wg-quick@wg0.service enabled" in t for t in self._planted(d)))
+
+    def test_kitchen_sink_wireguard_keeps_an_existing_config(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink")
+            conf = map_path(driftify.WG_CONF_PATH)
+            conf.parent.mkdir(parents=True)
+            conf.write_text("[Interface]\nPrivateKey = KEEPME=\n")
+            d._drift_unit_states()
+            self.assertEqual(conf.read_text(), "[Interface]\nPrivateKey = KEEPME=\n")
+        self.assertEqual(fake.genkey_calls, 0)
+
+    def test_kitchen_sink_wireguard_absent_is_skipped(self):
+        units = {k: v for k, v in EL9_UNITS.items() if k != "wg-quick@.service"}
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink", units=units)
+            d._drift_unit_states()
+            self.assertFalse(map_path(driftify.WG_CONF_PATH).exists())
+        self.assertEqual(fake.genkey_calls, 0)
+        self.assertTrue(any("wg-quick@wg0" in t for t in self._skipped(d)))
+
+    def test_kitchen_sink_multipathd_socket_on_el9(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink", units=EL9_UNITS, also=EL9_ALSO)
+            d._drift_unit_states()
+        self.assertTrue(fake.ran("systemctl", "enable", "multipathd.service"))
+        self.assertTrue(any("multipathd.socket enabled" in t for t in self._planted(d)))
+
+    def test_kitchen_sink_multipathd_socket_skipped_on_el10(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink", units=EL10_UNITS,
+                                       also=REAL_ALSO, version=257)
+            d._drift_unit_states()
+        self.assertFalse(any("multipathd" in " ".join(c) for c in fake.commands))
+        skipped = "\n".join(self._skipped(d))
+        self.assertIn("multipathd.socket", skipped)
+        self.assertIn("[Install]", skipped)
+
+    def test_kitchen_sink_upheld_unit_on_systemd_257(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink", units=EL10_UNITS,
+                                              also=REAL_ALSO, version=257)
+            fake.units["driftify-upheld.service"] = ["disabled", "disabled"]
+            d._drift_unit_states()
+            content = map_path("/etc/systemd/system/driftify-upheld.service").read_text()
+        self.assertIn("UpheldBy=multi-user.target", content)
+        self.assertIn("ExecStart=/bin/true", content)
+        self.assertTrue(fake.ran("systemctl", "enable", "driftify-upheld.service"))
+        self.assertTrue(any(
+            "multi-user.target.upholds/driftify-upheld.service" in t
+            for t in self._planted(d)))
+
+    def test_kitchen_sink_upheld_unit_skipped_on_systemd_252(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink", version=252)
+            d._drift_unit_states()
+            self.assertFalse(map_path("/etc/systemd/system/driftify-upheld.service").exists())
+        self.assertFalse(any("driftify-upheld" in " ".join(c) for c in fake.commands))
+        skipped = "\n".join(self._skipped(d))
+        self.assertIn("UpheldBy=", skipped)
+        self.assertIn("252", skipped)
+
+    def test_kitchen_sink_sets_default_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink")
+            d._drift_unit_states()
+        self.assertTrue(fake.ran("systemctl", "set-default", "graphical.target"))
+        self.assertEqual(fake.default, "graphical.target")
+        self.assertTrue(any(
+            "default.target -> graphical.target" in t for t in self._planted(d)))
+
+    def test_kitchen_sink_rerun_ends_in_the_same_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink", units=EL10_UNITS,
+                                       also=REAL_ALSO, version=257)
+            d._drift_unit_states()
+            first_units = {k: list(v) for k, v in fake.units.items()}
+            first_inst = dict(fake.instances)
+            first_default = fake.default
+            first_planted = self._planted(d)
+            first_skipped = self._skipped(d)
+            d._unit_cases = []
+            d._drift_unit_states()
+        self.assertEqual(fake.units, first_units)
+        self.assertEqual(fake.instances, first_inst)
+        self.assertEqual(fake.default, first_default)
+        self.assertEqual(self._planted(d), first_planted)
+        self.assertEqual(self._skipped(d), first_skipped)
+        self.assertEqual(fake.genkey_calls, 1)
+
+    def test_kitchen_sink_after_standard_keeps_cockpit_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "standard")
+            d._drift_unit_states()
+            after_standard = fake.units["cockpit.socket"][0]
+            d.profile = "kitchen-sink"
+            d._drift_unit_states()
+        self.assertEqual(after_standard, "enabled")
+        self.assertEqual(fake.units["cockpit.socket"][0], "enabled")
+
+    def test_state_that_does_not_take_is_not_claimed(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "minimal")
+            original = fake.query
+            fake.query = lambda args: (
+                "disabled\n" if args == ["is-enabled", "tmp.mount"] else original(args))
+            d._systemctl_query = fake.query
+            d._drift_unit_states()
+        self.assertFalse(any("tmp.mount" in t for t in self._planted(d)))
+        self.assertTrue(any("tmp.mount" in t for t in self._skipped(d)))
+
+    # ── dry run, section gating, summary, packages ───────────────────────
+
+    def _capture(self, fn):
+        self._suppress.__exit__(None, None, None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        self._suppress.__enter__()
+        return buf.getvalue()
+
+    def test_dry_run_prints_the_plan_without_probing(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        with unittest.mock.patch("subprocess.run",
+                                 side_effect=AssertionError("probed in dry run")), \
+             unittest.mock.patch.object(driftify.Path, "exists", return_value=False):
+            output = self._capture(d._drift_unit_states)
+        for text in ("systemctl mask tmp.mount", "getty@tty2.service",
+                     "driftify-static.service", "driftify-also-main.service",
+                     "cockpit.socket", "systemctl disable cups.socket",
+                     "systemctl disable iscsid.socket",
+                     "systemctl disable virtnetworkd-ro.socket",
+                     "wg-quick@wg0.service", "multipathd.service",
+                     "driftify-upheld.service", "set-default graphical.target"):
+            self.assertIn(text, output)
+
+    def test_dry_run_minimal_prints_only_minimal_cases(self):
+        d = driftify.Driftify("minimal", dry_run=True, skip_sections=[])
+        with unittest.mock.patch.object(driftify.Path, "exists", return_value=False):
+            output = self._capture(d._drift_unit_states)
+        self.assertIn("tmp.mount", output)
+        self.assertNotIn("cockpit", output)
+        self.assertNotIn("cups", output)
+
+    def test_skip_services_skips_unit_states(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=["services"])
+        d._drift_unit_states = unittest.mock.MagicMock()
+        d.drift_services()
+        d._drift_unit_states.assert_not_called()
+
+    def test_summary_lists_planted_and_skipped_cases(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, _ = self._drifter(td, "kitchen-sink", version=252)
+            d._drift_unit_states()
+            d._t0 = driftify.time.monotonic()
+            output = self._capture(d._print_summary)
+        self.assertIn("tmp.mount masked", output)
+        self.assertIn("cups.socket disabled", output)
+        self.assertIn("skipped: driftify-upheld.service", output)
+
+    def test_summary_without_services_lists_no_unit_cases(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=["services"])
+        d._t0 = driftify.time.monotonic()
+        output = self._capture(d._print_summary)
+        self.assertNotIn("tmp.mount", output)
+
+    def test_run_description_names_the_unit_cases_by_profile(self):
+        minimal = " ".join(driftify.Driftify(
+            "minimal", dry_run=True, skip_sections=[])._run_description())
+        standard = " ".join(driftify.Driftify(
+            "standard", dry_run=True, skip_sections=[])._run_description())
+        sink = " ".join(driftify.Driftify(
+            "kitchen-sink", dry_run=True, skip_sections=[])._run_description())
+        self.assertIn("mask tmp.mount", minimal)
+        self.assertNotIn("cockpit.socket", minimal)
+        self.assertIn("cockpit.socket", standard)
+        self.assertNotIn("cups.socket", standard)
+        for text in ("cups.socket", "iscsid.socket", "virtnetworkd", "wg-quick@wg0",
+                     "multipathd.socket", "UpheldBy=", "graphical.target"):
+            self.assertIn(text, sink)
+
+    def test_rpm_installs_unit_case_packages_by_profile(self):
+        def dnf_lines(profile):
+            d = driftify.Driftify(profile, dry_run=True, skip_sections=[])
+            d._install_mixed_arch = lambda: None
+            d._install_duplicate_package = lambda: None
+            return self._capture(d.drift_rpm)
+
+        minimal, standard, sink = (dnf_lines(p) for p in driftify.PROFILES)
+        self.assertNotIn("cockpit", minimal)
+        self.assertIn("dnf install -y cockpit", standard)
+        self.assertNotIn("cups", standard)
+        for pkg in ("cups", "iscsi-initiator-utils", "libvirt-daemon-driver-network",
+                    "libvirt-daemon-log", "libvirt-daemon-lock", "wireguard-tools",
+                    "device-mapper-multipath"):
+            self.assertIn(pkg, sink)
+        self.assertNotIn("libvirt-daemon-driver-qemu", sink)
+        self.assertNotIn("podman-docker", sink)

@@ -102,7 +102,7 @@ Profiles are cumulative: `standard` includes everything in `minimal`, and `kitch
 | Section | inspectah inspector | What driftify plants |
 |---------|-----------------|---------------------|
 | rpm | Package inspector | Repo setup, base + extra-repo packages, ghost packages, monitoring packages |
-| services | Service inspector | Enabled/disabled/masked services, drop-in overrides, unit shadows, legacy init scripts |
+| services | Service inspector | Enabled/disabled/masked services, drop-in overrides, unit shadows, legacy init scripts, a masked mount unit, template instances, hand-made and `Also=` links, sockets set apart from their services or their preset, an `.upholds` link, the default target |
 | config | Config inspector | Modified RPM-owned configs, unowned app configs, orphaned configs, auth/identity files, tmpfiles.d, tuned profiles, logging configs, cross-tree symlinks, legacy network configs |
 | network | Network inspector | Firewalld rules, custom zones, /etc/hosts, NM profiles |
 | storage | Storage inspector | NFS/CIFS fstab entries, app data dirs, unbacked /var dirs |

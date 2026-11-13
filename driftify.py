@@ -96,6 +96,33 @@ NGINX_MINIMAL_PORT = 81
 SSHD_DRIFTIFY_DROPIN = "/etc/ssh/sshd_config.d/00-driftify.conf"
 SSHD_DROPIN_MODE = 0o600
 
+# ── systemd unit-state fixtures ──────────────────────────────────────────────
+SYSTEMD_ETC = "/etc/systemd/system"
+
+# UpheldBy= in [Install], and the .upholds/ directories it fills, arrived in
+# systemd 254 (NEWS, "CHANGES WITH 254"). RHEL 9's systemd 252 prints "no
+# installation config" for such a unit, exits 0 and makes no link.
+SYSTEMD_UPHELDBY_MIN = 254
+
+# wg-quick@wg0 reads this file. Its private key is generated at plant time
+# with `wg genkey` and kept on a re-run, so no key is committed here.
+WG_CONF_PATH = "/etc/wireguard/wg0.conf"
+WG_CONF_MODE = 0o600
+
+# Packages the unit-state cases in the Services section need. Installed in
+# the RPM section, one dnf call per case, so one missing package skips only
+# its own case.
+UNIT_CASE_PACKAGES = {
+    "standard": [["cockpit"]],
+    "kitchen-sink": [
+        ["cups"],
+        ["iscsi-initiator-utils"],
+        ["libvirt-daemon-driver-network", "libvirt-daemon-log", "libvirt-daemon-lock"],
+        ["wireguard-tools"],
+        ["device-mapper-multipath"],
+    ],
+}
+
 # ── Python environment fixtures ──────────────────────────────────────────────
 # inspectah rates a venv "high confidence" only when a requirements.txt sits
 # in the venv's parent directory or the venv root, and only high-confidence
@@ -579,6 +606,9 @@ class Driftify:
         )
         self._appuser_created = True  # cleared if useradd appuser fails at runtime
         self._dbuser_created  = True  # cleared if useradd dbuser fails at runtime
+        # (status, text) per unit-state case: "planted" or "skipped".
+        # The summary reports these as outcomes, not as the profile's plan.
+        self._unit_cases = []
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -797,6 +827,101 @@ class Driftify:
         _warn(f"{cmd} not found — skipping (install the required package if needed)")
         return False
 
+    def _ensure_symlink(self, link_str: str, target: str) -> None:
+        """Create *link_str* -> *target*, leaving an existing link alone."""
+        link = Path(link_str)
+        if link.is_symlink():
+            if not self.quiet:
+                _info(f"No change needed: {link}")
+            return
+        if self.dry_run:
+            _dry(f"ln -s {target} {link}")
+            return
+        self._ensure_dir(link.parent)
+        link.symlink_to(target)
+        _info(f"Linked {link} -> {target}")
+
+    def _write_if_absent(self, path_str: str, make_content, mode: int = 0o644) -> bool:
+        """Write make_content() to *path_str* only when the file does not exist.
+
+        Returns False when make_content() returns None, so nothing was written.
+        """
+        if Path(path_str).exists():
+            _info(f"Keeping existing {path_str}")
+            return True
+        content = make_content()
+        if content is None:
+            return False
+        self._write_managed_text(path_str, content, mode=mode)
+        return True
+
+    # ── systemd queries (read-only, never run in --dry-run) ───────────────
+
+    def _systemctl_query(self, args: list):
+        """Return the stdout of a read-only systemctl query, or None."""
+        try:
+            r = subprocess.run(["systemctl"] + args,
+                               capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            return None
+        return r.stdout
+
+    def _unit_file_state(self, unit: str):
+        """Return (state, preset) from list-unit-files, or None if absent.
+
+        preset is None where systemd prints no preset column (EL8's 239).
+        """
+        out = self._systemctl_query(
+            ["list-unit-files", "--no-pager", "--no-legend", unit])
+        for line in (out or "").splitlines():
+            fields = line.split()
+            if len(fields) >= 2 and fields[0] == unit:
+                return fields[1], (fields[2] if len(fields) > 2 else None)
+        return None
+
+    def _is_enabled(self, unit: str):
+        out = self._systemctl_query(["is-enabled", unit])
+        lines = (out or "").split()
+        return lines[0] if lines else None
+
+    def _systemd_version(self):
+        m = re.match(r"systemd (\d+)", self._systemctl_query(["--version"]) or "")
+        return int(m.group(1)) if m else None
+
+    # ── unit-state case bookkeeping ───────────────────────────────────────
+
+    def _unit_skip(self, text: str, action: str = "skipping") -> None:
+        _warn(f"{text}, {action}")
+        self._unit_cases.append(("skipped", text))
+
+    def _units_present(self, label: str, units: list, hint: str) -> bool:
+        """True when every unit file exists (always True in --dry-run)."""
+        if self.dry_run:
+            return True
+        for unit in units:
+            if self._unit_file_state(unit) is None:
+                self._unit_skip(f"{label}: {unit} not found ({hint})")
+                return False
+        return True
+
+    def _apply_unit_state(self, label: str, cmds: list, expect: list,
+                          planted: list) -> None:
+        """Run *cmds*, confirm each (unit, state) in *expect*, record *planted*.
+
+        A case whose state did not take is recorded as skipped, so the
+        summary never claims it.
+        """
+        for cmd in cmds:
+            self.run_cmd(cmd, check=False)
+        if not self.dry_run:
+            for unit, want in expect:
+                got = self._is_enabled(unit)
+                if got != want:
+                    self._unit_skip(f"{label}: {unit} is {got or 'unknown'} "
+                                    f"after the change, expected {want}", "not counted")
+                    return
+        self._unit_cases.extend(("planted", text) for text in planted)
+
     # ── confirmation ──────────────────────────────────────────────────────
 
     def _run_description(self) -> list:
@@ -842,6 +967,23 @@ class Driftify:
                 svcs += (
                     ", nginx; limits.conf overwritten (LimitNOFILE=65535, LimitNPROC=4096)"
                     "; xinetd service"
+                )
+            svcs += "; mask tmp.mount; enable getty@tty2.service"
+            if self.needs_profile("standard"):
+                svcs += (
+                    "; local static unit with a hand-made wants link"
+                    "; local Also= pair enabled"
+                    "; cockpit.socket set against its preset"
+                )
+            if self.needs_profile("kitchen-sink"):
+                svcs += (
+                    "; cups.service on, cups.socket off"
+                    "; iscsid.service on, iscsid.socket off"
+                    "; virtnetworkd.service on, its sockets off"
+                    "; wg-quick@wg0 enabled"
+                    "; multipathd.socket enabled (where it has [Install])"
+                    f"; local UpheldBy= unit (systemd {SYSTEMD_UPHELDBY_MIN}+)"
+                    "; default target graphical.target"
                 )
             lines.append(svcs)
 
@@ -1200,6 +1342,13 @@ class Driftify:
                 label="node_exporter",
             )
 
+        # Packages behind the Services section's unit-state cases
+        for level in PROFILES:
+            if not self.needs_profile(level):
+                break
+            for pkgs in UNIT_CASE_PACKAGES.get(level, []):
+                self._try_install(pkgs, label=pkgs[0])
+
         # DNF module streams and version locks (kitchen-sink)
         # Exercises inspectah's detection of enabled module streams and version locks
         if self.needs_profile("kitchen-sink"):
@@ -1431,6 +1580,306 @@ class Driftify:
                 "/etc/systemd/system/httpd.service.d/limits.conf",
                 "[Service]\nLimitNOFILE=65535\nLimitNPROC=4096\n",
             )
+
+        self._drift_unit_states()
+
+    def _drift_unit_states(self) -> None:
+        """Unit state beyond .service enablement: a storage mask, template
+        instances, hand-made links, Also= closures, sockets set against their
+        preset, an .upholds link and the default target.
+
+        Profiles are cumulative and the fleet test runs them in sequence on
+        one host, so every case sets a fixed end state: a re-run, or a higher
+        profile on the same host, leaves it as it was. enable and disable
+        follow Also=, so each "service on, socket off" pair runs its enable
+        before its disable, at the same profile level. No case uses --now.
+        """
+        E = SYSTEMD_ETC
+
+        # ── minimal ──
+        if self._units_present("tmp.mount mask", ["tmp.mount"], "no vendor unit"):
+            _info(f"{_I.MASK}  Masking tmp.mount")
+            self._apply_unit_state(
+                "tmp.mount mask",
+                [["systemctl", "mask", "tmp.mount"]],
+                [("tmp.mount", "masked")],
+                [f"tmp.mount masked ({E}/tmp.mount -> /dev/null)"],
+            )
+
+        if self._units_present("getty@tty2", ["getty@.service"], "no getty template"):
+            _info(f"{_I.TOGGLE}  Enabling template instance getty@tty2.service")
+            self._apply_unit_state(
+                "getty@tty2",
+                [["systemctl", "enable", "getty@tty2.service"]],
+                [("getty@tty2.service", "enabled")],
+                [f"getty@tty2.service enabled "
+                 f"({E}/getty.target.wants/getty@tty2.service)"],
+            )
+
+        if not self.needs_profile("standard"):
+            return
+
+        # ── standard ──
+        # A static unit (no [Install]) that only a hand-made link pulls in.
+        # systemctl enable would refuse it, so the link is made with ln -s.
+        _info(f"{_I.WRENCH}  Writing static unit driftify-static.service + hand-made link")
+        self._write_managed_text(
+            f"{E}/driftify-static.service",
+            "[Unit]\n"
+            "Description=driftify static unit pulled in by a hand-made link\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "ExecStart=/bin/true\n",
+        )
+        static_link = f"{E}/multi-user.target.wants/driftify-static.service"
+        self._ensure_symlink(static_link, f"{E}/driftify-static.service")
+        self._apply_unit_state(
+            "driftify-static.service", [],
+            [("driftify-static.service", "enabled")],
+            [f"driftify-static.service enabled by a hand-made link, no [Install] "
+             f"({static_link})"],
+        )
+
+        # A local Also= pair: enabling the main unit links the member too.
+        _info(f"{_I.TOGGLE}  Writing and enabling the Also= pair driftify-also-main/-member")
+        self._write_managed_text(
+            f"{E}/driftify-also-main.service",
+            "[Unit]\n"
+            "Description=driftify unit whose [Install] names an Also= member\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "ExecStart=/bin/true\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+            "Also=driftify-also-member.service\n",
+        )
+        self._write_managed_text(
+            f"{E}/driftify-also-member.service",
+            "[Unit]\n"
+            "Description=driftify Also= member of driftify-also-main.service\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "ExecStart=/bin/true\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n",
+        )
+        self._apply_unit_state(
+            "Also= pair",
+            [["systemctl", "enable", "driftify-also-main.service"]],
+            [("driftify-also-main.service", "enabled"),
+             ("driftify-also-member.service", "enabled")],
+            [f"driftify-also-main.service enabled "
+             f"({E}/multi-user.target.wants/driftify-also-main.service)",
+             f"driftify-also-member.service enabled through Also= "
+             f"({E}/multi-user.target.wants/driftify-also-member.service)"],
+        )
+
+        self._cockpit_against_preset()
+
+        if not self.needs_profile("kitchen-sink"):
+            return
+
+        # ── kitchen-sink ──
+        # "Service on, socket off": enable follows Also= and turns the socket
+        # on, then disable turns it off again. A re-run repeats both steps.
+        cups_wants = (f"{E}/printer.target.wants/cups.service, "
+                      f"{E}/multi-user.target.wants/cups.service")
+        if self._units_present("cups pair", ["cups.service", "cups.socket"],
+                               "cups not installed"):
+            _info(f"{_I.TOGGLE}  cups.service on, cups.socket off")
+            self._apply_unit_state(
+                "cups pair",
+                [["systemctl", "enable", "cups.service"],
+                 ["systemctl", "disable", "cups.socket"]],
+                [("cups.service", "enabled"), ("cups.socket", "disabled")],
+                [f"cups.service enabled ({cups_wants})",
+                 f"cups.path enabled through Also= "
+                 f"({E}/multi-user.target.wants/cups.path)",
+                 f"cups.socket disabled (no {E}/sockets.target.wants/cups.socket)"],
+            )
+
+        if self._units_present("iscsid pair", ["iscsid.service", "iscsid.socket"],
+                               "iscsi-initiator-utils not installed"):
+            _info(f"{_I.TOGGLE}  iscsid.service on, iscsid.socket off")
+            self._apply_unit_state(
+                "iscsid pair",
+                [["systemctl", "enable", "iscsid.service"],
+                 ["systemctl", "disable", "iscsid.socket"]],
+                [("iscsid.service", "enabled"), ("iscsid.socket", "disabled")],
+                [f"iscsid.service enabled ({E}/multi-user.target.wants/iscsid.service)",
+                 f"iscsid.socket disabled (no {E}/sockets.target.wants/iscsid.socket)"],
+            )
+
+        # The three virtnetworkd sockets name each other in Also=, so
+        # disabling the -ro socket switches off all three.
+        vnet_sockets = ["virtnetworkd.socket", "virtnetworkd-ro.socket",
+                        "virtnetworkd-admin.socket"]
+        if self._units_present("virtnetworkd pair",
+                               ["virtnetworkd.service"] + vnet_sockets,
+                               "libvirt-daemon-driver-network not installed"):
+            _info(f"{_I.TOGGLE}  virtnetworkd.service on, its three sockets off")
+            self._apply_unit_state(
+                "virtnetworkd pair",
+                [["systemctl", "enable", "virtnetworkd.service"],
+                 ["systemctl", "disable", "virtnetworkd-ro.socket"]],
+                [("virtnetworkd.service", "enabled")]
+                + [(s, "disabled") for s in vnet_sockets],
+                [f"virtnetworkd.service enabled "
+                 f"({E}/multi-user.target.wants/virtnetworkd.service)"]
+                + [f"{s} disabled through Also= (no {E}/sockets.target.wants/{s})"
+                   for s in vnet_sockets],
+            )
+
+        self._wireguard_instance()
+        self._multipathd_socket()
+        self._upheld_unit()
+
+        _info(f"{_I.TOGGLE}  Setting the default target to graphical.target")
+        self.run_cmd(["systemctl", "set-default", "graphical.target"], check=False)
+        got = None if self.dry_run else (
+            self._systemctl_query(["get-default"]) or "").strip()
+        if self.dry_run or got == "graphical.target":
+            self._unit_cases.append(
+                ("planted", f"default.target -> graphical.target ({E}/default.target)"))
+        else:
+            self._unit_skip(f"default target is {got or 'unknown'}, expected "
+                            "graphical.target", "not counted")
+
+    def _cockpit_against_preset(self) -> None:
+        """Set cockpit.socket to the opposite of its preset.
+
+        The preset is disable on RHEL 9 and enable on RHEL 10. Reading it at
+        run time covers CentOS Stream and Fedora too, and the end state
+        depends only on the preset, so a re-run never flips it back.
+        """
+        link = f"{SYSTEMD_ETC}/sockets.target.wants/cockpit.socket"
+        if self.dry_run:
+            _dry("systemctl enable cockpit.socket where its preset is disable, "
+                 "systemctl disable cockpit.socket where it is enable")
+            self._unit_cases.append(("planted", f"cockpit.socket set against its preset ({link})"))
+            return
+        found = self._unit_file_state("cockpit.socket")
+        if found is None:
+            self._unit_skip("cockpit.socket not found (cockpit not installed)")
+            return
+        preset = found[1]
+        if preset not in ("enabled", "disabled"):
+            self._unit_skip(f"cockpit.socket has no enable/disable preset "
+                            f"({preset or 'no preset column'})")
+            return
+        verb, want = ("enable", "enabled") if preset == "disabled" else ("disable", "disabled")
+        _info(f"{_I.TOGGLE}  cockpit.socket: preset {preset}, setting {want}")
+        where = link if want == "enabled" else f"no {link}"
+        self._apply_unit_state(
+            "cockpit.socket",
+            [["systemctl", verb, "cockpit.socket"]],
+            [("cockpit.socket", want)],
+            [f"cockpit.socket {want} against its {preset[:-1]} preset ({where})"],
+        )
+
+    def _wireguard_instance(self) -> None:
+        """Enable wg-quick@wg0 with a config holding a throwaway key.
+
+        Enable only: the interface is not brought up.
+        """
+        unit = "wg-quick@wg0.service"
+        if not self._units_present("wg-quick@wg0", ["wg-quick@.service"],
+                                   "wireguard-tools not installed"):
+            return
+        _info(f"{_I.TOGGLE}  Enabling {unit} with {WG_CONF_PATH}")
+        if self.dry_run:
+            _dry(f"wg genkey into {WG_CONF_PATH} (mode 0600, kept if present)")
+        else:
+            def wg_conf():
+                r = self.run_cmd(["wg", "genkey"], check=False, capture=True)
+                key = (r.stdout or "").strip() if r is not None and r.returncode == 0 else ""
+                if not key:
+                    return None
+                return ("# driftify fixture: throwaway key generated at plant time\n"
+                        "[Interface]\n"
+                        f"PrivateKey = {key}\n"
+                        "Address = 10.200.200.1/24\n"
+                        "ListenPort = 51820\n")
+            if not self._write_if_absent(WG_CONF_PATH, wg_conf, mode=WG_CONF_MODE):
+                self._unit_skip(f"wg-quick@wg0: wg genkey failed, no {WG_CONF_PATH}")
+                return
+        self._apply_unit_state(
+            "wg-quick@wg0",
+            [["systemctl", "enable", unit]],
+            [(unit, "enabled")],
+            [f"{unit} enabled ({SYSTEMD_ETC}/multi-user.target.wants/{unit}), "
+             f"config {WG_CONF_PATH}"],
+        )
+
+    def _multipathd_socket(self) -> None:
+        """Enable multipathd.socket against its disable preset, through the
+        Also= on multipathd.service.
+
+        On RHEL 10 multipathd.service carries no Also= and multipathd.socket
+        has no [Install], so the socket cannot be enabled there: the unit
+        file state, not the release, decides.
+        """
+        link = f"{SYSTEMD_ETC}/sockets.target.wants/multipathd.socket"
+        if self.dry_run:
+            _dry("systemctl enable multipathd.service, where multipathd.socket "
+                 "has an [Install] section and a disable preset")
+            self._unit_cases.append(
+                ("planted", f"multipathd.socket enabled through Also= ({link})"))
+            return
+        if not self._units_present("multipathd.socket",
+                                   ["multipathd.service", "multipathd.socket"],
+                                   "device-mapper-multipath not installed"):
+            return
+        state, preset = self._unit_file_state("multipathd.socket")
+        if state == "static":
+            self._unit_skip("multipathd.socket has no [Install] section here, so it "
+                            "cannot be enabled (on RHEL 10 multipathd.service carries "
+                            "no Also=multipathd.socket)")
+            return
+        if preset != "disabled":
+            self._unit_skip(f"multipathd.socket preset is {preset or 'unknown'}, "
+                            "not disable, so enabling it is not drift")
+            return
+        _info(f"{_I.TOGGLE}  Enabling multipathd.service (Also= enables multipathd.socket)")
+        self._apply_unit_state(
+            "multipathd.socket",
+            [["systemctl", "enable", "multipathd.service"]],
+            [("multipathd.socket", "enabled")],
+            [f"multipathd.socket enabled against its disable preset, "
+             f"through Also= on multipathd.service ({link})"],
+        )
+
+    def _upheld_unit(self) -> None:
+        """A local unit with UpheldBy=multi-user.target, on systemd 254+."""
+        unit = "driftify-upheld.service"
+        link = f"{SYSTEMD_ETC}/multi-user.target.upholds/{unit}"
+        if self.dry_run:
+            _dry(f"write {SYSTEMD_ETC}/{unit} and systemctl enable {unit} "
+                 f"(systemd {SYSTEMD_UPHELDBY_MIN}+ only)")
+            self._unit_cases.append(("planted", f"{unit} enabled ({link})"))
+            return
+        version = self._systemd_version()
+        if version is None or version < SYSTEMD_UPHELDBY_MIN:
+            self._unit_skip(f"{unit}: systemd {version or 'unknown'} does not support "
+                            f"UpheldBy= (needs {SYSTEMD_UPHELDBY_MIN}+)")
+            return
+        _info(f"{_I.TOGGLE}  Writing and enabling {unit} (UpheldBy=multi-user.target)")
+        self._write_managed_text(
+            f"{SYSTEMD_ETC}/{unit}",
+            "[Unit]\n"
+            "Description=driftify unit upheld by multi-user.target\n\n"
+            "[Service]\n"
+            "Type=oneshot\n"
+            "ExecStart=/bin/true\n\n"
+            "[Install]\n"
+            "UpheldBy=multi-user.target\n",
+        )
+        self._apply_unit_state(
+            unit,
+            [["systemctl", "enable", unit]],
+            [(unit, "enabled")],
+            [f"{unit} enabled ({link})"],
+        )
 
     # ── Config Files ───────────────────────────────────────────────────────
 
@@ -3639,6 +4088,11 @@ domain=INTERNAL
         else:
             svc_str = "skipped"
         _info(f"{SECTION_ICONS['services']}  Services:   {svc_str}")
+        # Unit-state cases, as they turned out: planted with the unit, its
+        # state and its link, or skipped with the reason.
+        if "services" not in self.skip:
+            for status, text in self._unit_cases:
+                _sub(text if status == "planted" else f"skipped: {text}")
 
         # ── Config ───────────────────────────────────────────────────────────
         if "config" not in self.skip:
