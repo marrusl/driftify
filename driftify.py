@@ -856,7 +856,8 @@ class Driftify:
     def _write_if_absent(self, path_str: str, make_content, mode: int = 0o644) -> bool:
         """Write make_content() to *path_str* only when the file does not exist.
 
-        Returns False when make_content() returns None, so nothing was written.
+        Returns False when nothing was written: make_content() returned None,
+        or the write was skipped with a warning (a dangling symlink, say).
         """
         if Path(path_str).exists():
             if not self.quiet:
@@ -866,7 +867,7 @@ class Driftify:
         if content is None:
             return False
         self._write_managed_text(path_str, content, mode=mode)
-        return True
+        return self.dry_run or Path(path_str).exists()
 
     # ── systemd queries (read-only, never run in --dry-run) ───────────────
 
@@ -1814,18 +1815,25 @@ class Driftify:
         if self.dry_run:
             _dry(f"wg genkey into {WG_CONF_PATH} (mode 0600, kept if present)")
         else:
+            generated = []
+
             def wg_conf():
                 r = self.run_cmd(["wg", "genkey"], check=False, capture=True)
                 key = (r.stdout or "").strip() if r is not None and r.returncode == 0 else ""
                 if not key:
                     return None
+                generated.append(True)
                 return ("# driftify fixture: throwaway key generated at plant time\n"
                         "[Interface]\n"
                         f"PrivateKey = {key}\n"
                         "Address = 10.200.200.1/24\n"
                         "ListenPort = 51820\n")
             if not self._write_if_absent(WG_CONF_PATH, wg_conf, mode=WG_CONF_MODE):
-                self._unit_skip(f"wg-quick@wg0: wg genkey failed, no {WG_CONF_PATH}")
+                if generated:
+                    self._unit_skip(f"wg-quick@wg0: {WG_CONF_PATH} could not be written, "
+                                    "see the warning above")
+                else:
+                    self._unit_skip(f"wg-quick@wg0: wg genkey failed, no {WG_CONF_PATH}")
                 return
         self._apply_unit_state(
             "wg-quick@wg0",

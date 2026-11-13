@@ -2523,6 +2523,21 @@ class TestUnitStates(RedirectedFixtureTestCase):
                      "driftify-upheld.service"):
             self.assertIn(f"{unit} is unknown", skipped)
 
+    def test_kitchen_sink_wireguard_dangling_config_link_is_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink")
+            conf = map_path(driftify.WG_CONF_PATH)
+            conf.parent.mkdir(parents=True)
+            conf.symlink_to(Path(td) / "gone" / "wg0.conf")
+            d._drift_unit_states()
+            self.assertTrue(conf.is_symlink())
+            self.assertFalse(conf.exists())
+            self.assertFalse((Path(td) / "gone").exists())
+        self.assertFalse(fake.ran("systemctl", "enable", "wg-quick@wg0.service"))
+        self.assertFalse(any("wg-quick@wg0" in t for t in self._planted(d)))
+        self.assertIn(f"wg-quick@wg0: {driftify.WG_CONF_PATH} could not be written, "
+                      "see the warning above", self._skipped(d))
+
     def test_keeping_an_existing_file_is_silent_when_quiet(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path, _ = self._drifter(td, "kitchen-sink")
