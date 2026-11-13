@@ -2526,6 +2526,19 @@ class TestUnitStates(RedirectedFixtureTestCase):
             "multi-user.target.upholds/driftify-upheld.service" in t
             for t in self._planted(d)))
 
+    def test_upheld_oneshot_stays_active_after_it_exits(self):
+        # multi-user.target restarts an upheld unit whenever it is inactive.
+        # A oneshot that exits goes inactive at once, so without
+        # RemainAfterExit= it is restarted until the start limit fails it.
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, fake = self._drifter(td, "kitchen-sink", units=EL10_UNITS,
+                                              also=REAL_ALSO, version=257)
+            fake.units["driftify-upheld.service"] = ["disabled", "disabled"]
+            d._drift_unit_states()
+            content = map_path("/etc/systemd/system/driftify-upheld.service").read_text()
+        self.assertIn("Type=oneshot", content)
+        self.assertIn("RemainAfterExit=yes", content)
+
     def test_kitchen_sink_upheld_unit_skipped_on_systemd_252(self):
         with tempfile.TemporaryDirectory() as td:
             d, map_path, fake = self._drifter(td, "kitchen-sink", version=252)

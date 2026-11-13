@@ -1870,7 +1870,12 @@ class Driftify:
         )
 
     def _upheld_unit(self) -> None:
-        """A local unit with UpheldBy=multi-user.target, on systemd 254+."""
+        """A local unit with UpheldBy=multi-user.target, on systemd 254+.
+
+        Unlike the other cases this one runs: the manager starts an upheld
+        unit as soon as the .upholds link exists, so it is a oneshot that
+        stays active after /bin/true exits.
+        """
         unit = "driftify-upheld.service"
         link = f"{SYSTEMD_ETC}/multi-user.target.upholds/{unit}"
         if self.dry_run:
@@ -1889,7 +1894,10 @@ class Driftify:
             "[Unit]\n"
             "Description=driftify unit upheld by multi-user.target\n\n"
             "[Service]\n"
+            # The target restarts an upheld unit whenever it is inactive; a
+            # oneshot that went inactive on exit would loop into start-limit-hit.
             "Type=oneshot\n"
+            "RemainAfterExit=yes\n"
             "ExecStart=/bin/true\n\n"
             "[Install]\n"
             "UpheldBy=multi-user.target\n",
