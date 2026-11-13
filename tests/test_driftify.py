@@ -2378,9 +2378,40 @@ class TestUnitStates(RedirectedFixtureTestCase):
             self.assertEqual(fake.units[sock][0], "disabled", sock)
         planted = "\n".join(self._planted(d))
         self.assertIn("cups.socket disabled", planted)
+        self.assertIn("cups.path enabled", planted)
         self.assertIn("iscsid.socket disabled", planted)
         self.assertIn("virtnetworkd-admin.socket", planted)
         self.assertFalse(any("--now" in c for c in fake.commands))
+
+    def test_kitchen_sink_cups_path_absent_is_skipped(self):
+        units = {k: v for k, v in EL9_UNITS.items() if k != "cups.path"}
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink", units=units)
+            d._drift_unit_states()
+        self.assertFalse(fake.ran("systemctl", "enable", "cups.service"))
+        self.assertFalse(any("cups" in t for t in self._planted(d)))
+        self.assertTrue(any("cups.path" in t for t in self._skipped(d)))
+
+    def test_kitchen_sink_cups_path_not_enabled_is_not_claimed(self):
+        # A cups.service without Also=cups.path leaves cups.path as it was.
+        units = dict(EL9_UNITS, **{"cups.path": ("disabled", "disabled")})
+        also = dict(EL9_ALSO, **{"cups.service": ["cups.socket"]})
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink", units=units, also=also)
+            d._drift_unit_states()
+        self.assertFalse(any("cups" in t for t in self._planted(d)))
+        self.assertTrue(any("cups.path is disabled" in t for t in self._skipped(d)))
+
+    def test_kitchen_sink_virtnetworkd_ro_socket_is_disabled_directly(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, _ = self._drifter(td, "kitchen-sink")
+            d._drift_unit_states()
+        planted = "\n".join(self._planted(d))
+        self.assertIn("virtnetworkd-ro.socket disabled (no ", planted)
+        self.assertNotIn("virtnetworkd-ro.socket disabled through", planted)
+        for sock in ("virtnetworkd.socket", "virtnetworkd-admin.socket"):
+            self.assertIn(f"{sock} disabled through Also= on virtnetworkd-ro.socket",
+                          planted)
 
     def test_kitchen_sink_wireguard_instance_with_generated_key(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2415,12 +2446,61 @@ class TestUnitStates(RedirectedFixtureTestCase):
         self.assertEqual(fake.genkey_calls, 0)
         self.assertTrue(any("wg-quick@wg0" in t for t in self._skipped(d)))
 
+    def test_kitchen_sink_wireguard_genkey_failure_is_skipped(self):
+        for label, result in (("non-zero exit", (1, "")),
+                              ("empty output", (0, "\n"))):
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                d, map_path, fake = self._drifter(td, "kitchen-sink")
+                original = fake.run
+
+                def run(cmd, check=True, capture=False, result=result):
+                    if [str(c) for c in cmd[:2]] == ["wg", "genkey"]:
+                        fake.commands.append([str(c) for c in cmd])
+                        rc, out = result
+                        return subprocess.CompletedProcess(cmd, rc, stdout=out)
+                    return original(cmd, check, capture)
+
+                d.run_cmd = run
+                d._drift_unit_states()
+                self.assertFalse(map_path(driftify.WG_CONF_PATH).exists())
+                self.assertTrue(fake.ran("wg", "genkey"))
+                self.assertFalse(fake.ran("systemctl", "enable", "wg-quick@wg0.service"))
+                self.assertFalse(any("wg-quick@wg0" in t for t in self._planted(d)))
+                self.assertTrue(any("wg-quick@wg0" in t and "wg genkey failed" in t
+                                    for t in self._skipped(d)))
+
+    def test_keeping_an_existing_file_is_silent_when_quiet(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, map_path, _ = self._drifter(td, "kitchen-sink")
+            d.quiet = True
+            conf = map_path(driftify.WG_CONF_PATH)
+            conf.parent.mkdir(parents=True)
+            conf.write_text("[Interface]\nPrivateKey = KEEPME=\n")
+            output = self._capture(
+                lambda: d._write_if_absent(driftify.WG_CONF_PATH, lambda: "x\n"))
+        self.assertNotIn("Keeping existing", output)
+
     def test_kitchen_sink_multipathd_socket_on_el9(self):
         with tempfile.TemporaryDirectory() as td:
             d, _, fake = self._drifter(td, "kitchen-sink", units=EL9_UNITS, also=EL9_ALSO)
             d._drift_unit_states()
         self.assertTrue(fake.ran("systemctl", "enable", "multipathd.service"))
         self.assertTrue(any("multipathd.socket enabled" in t for t in self._planted(d)))
+
+    def test_kitchen_sink_multipathd_service_not_enabled_is_not_claimed(self):
+        # The text says the socket came on through multipathd.service's Also=,
+        # so the service has to end enabled too.
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "kitchen-sink")
+            original = fake.query
+            fake.query = lambda args: (
+                "disabled\n" if args == ["is-enabled", "multipathd.service"]
+                else original(args))
+            d._systemctl_query = fake.query
+            d._drift_unit_states()
+        self.assertFalse(any("multipathd" in t for t in self._planted(d)))
+        self.assertTrue(any("multipathd.service is disabled" in t
+                            for t in self._skipped(d)))
 
     def test_kitchen_sink_multipathd_socket_skipped_on_el10(self):
         with tempfile.TemporaryDirectory() as td:
@@ -2504,6 +2584,34 @@ class TestUnitStates(RedirectedFixtureTestCase):
             d._drift_unit_states()
         self.assertFalse(any("tmp.mount" in t for t in self._planted(d)))
         self.assertTrue(any("tmp.mount" in t for t in self._skipped(d)))
+
+    # ── daemon-reload after the local unit files ─────────────────────────
+
+    def test_daemon_reload_follows_every_local_unit_write(self):
+        reload = ("systemctl", "daemon-reload")
+        for profile, units, version, last_local in (
+                ("standard", EL9_UNITS, 252, "driftify-also-main.service"),
+                ("kitchen-sink", EL10_UNITS, 257, "driftify-upheld.service")):
+            with self.subTest(profile), tempfile.TemporaryDirectory() as td:
+                d, _, fake = self._drifter(td, profile, units=units, version=version)
+                d._drift_unit_states()
+                self.assertEqual(fake.commands.count(list(reload)), 1)
+                self.assertGreater(fake.index(*reload),
+                                   fake.index("systemctl", "enable", last_local))
+
+    def test_daemon_reload_not_run_at_minimal(self):
+        with tempfile.TemporaryDirectory() as td:
+            d, _, fake = self._drifter(td, "minimal")
+            d._drift_unit_states()
+        self.assertFalse(fake.ran("systemctl", "daemon-reload"))
+
+    def test_daemon_reload_not_run_in_dry_run(self):
+        d = driftify.Driftify("kitchen-sink", dry_run=True, skip_sections=[])
+        d.run_cmd = unittest.mock.MagicMock()
+        with unittest.mock.patch.object(driftify.Path, "exists", return_value=False):
+            self._capture(d._drift_unit_states)
+        self.assertNotIn(["systemctl", "daemon-reload"],
+                         [c.args[0] for c in d.run_cmd.call_args_list])
 
     # ── dry run, section gating, summary, packages ───────────────────────
 

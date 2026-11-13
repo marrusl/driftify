@@ -855,7 +855,8 @@ class Driftify:
         Returns False when make_content() returns None, so nothing was written.
         """
         if Path(path_str).exists():
-            _info(f"Keeping existing {path_str}")
+            if not self.quiet:
+                _info(f"Keeping existing {path_str}")
             return True
         content = make_content()
         if content is None:
@@ -1602,6 +1603,14 @@ class Driftify:
         follow Also=, so each "service on, socket off" pair runs its enable
         before its disable, at the same profile level. No case uses --now.
         """
+        self._plant_unit_states()
+        # standard and up write local unit files and a hand-made link that no
+        # systemctl call created. Reload once, after the last of them, so the
+        # manager loads what is on disk whichever cases ran or were skipped.
+        if self.needs_profile("standard") and not self.dry_run:
+            self.run_cmd(["systemctl", "daemon-reload"], check=False)
+
+    def _plant_unit_states(self) -> None:
         E = SYSTEMD_ETC
 
         # ── minimal ──
@@ -1692,14 +1701,15 @@ class Driftify:
         # on, then disable turns it off again. A re-run repeats both steps.
         cups_wants = (f"{E}/printer.target.wants/cups.service, "
                       f"{E}/multi-user.target.wants/cups.service")
-        if self._units_present("cups pair", ["cups.service", "cups.socket"],
+        if self._units_present("cups pair", ["cups.service", "cups.socket", "cups.path"],
                                "cups not installed"):
             _info(f"{_I.TOGGLE}  cups.service on, cups.socket off")
             self._apply_unit_state(
                 "cups pair",
                 [["systemctl", "enable", "cups.service"],
                  ["systemctl", "disable", "cups.socket"]],
-                [("cups.service", "enabled"), ("cups.socket", "disabled")],
+                [("cups.service", "enabled"), ("cups.socket", "disabled"),
+                 ("cups.path", "enabled")],
                 [f"cups.service enabled ({cups_wants})",
                  f"cups.path enabled through Also= "
                  f"({E}/multi-user.target.wants/cups.path)",
@@ -1720,8 +1730,8 @@ class Driftify:
 
         # The three virtnetworkd sockets name each other in Also=, so
         # disabling the -ro socket switches off all three.
-        vnet_sockets = ["virtnetworkd.socket", "virtnetworkd-ro.socket",
-                        "virtnetworkd-admin.socket"]
+        vnet_ro = "virtnetworkd-ro.socket"
+        vnet_sockets = ["virtnetworkd.socket", vnet_ro, "virtnetworkd-admin.socket"]
         if self._units_present("virtnetworkd pair",
                                ["virtnetworkd.service"] + vnet_sockets,
                                "libvirt-daemon-driver-network not installed"):
@@ -1729,13 +1739,15 @@ class Driftify:
             self._apply_unit_state(
                 "virtnetworkd pair",
                 [["systemctl", "enable", "virtnetworkd.service"],
-                 ["systemctl", "disable", "virtnetworkd-ro.socket"]],
+                 ["systemctl", "disable", vnet_ro]],
                 [("virtnetworkd.service", "enabled")]
                 + [(s, "disabled") for s in vnet_sockets],
                 [f"virtnetworkd.service enabled "
-                 f"({E}/multi-user.target.wants/virtnetworkd.service)"]
-                + [f"{s} disabled through Also= (no {E}/sockets.target.wants/{s})"
-                   for s in vnet_sockets],
+                 f"({E}/multi-user.target.wants/virtnetworkd.service)",
+                 f"{vnet_ro} disabled (no {E}/sockets.target.wants/{vnet_ro})"]
+                + [f"{s} disabled through Also= on {vnet_ro} "
+                   f"(no {E}/sockets.target.wants/{s})"
+                   for s in vnet_sockets if s != vnet_ro],
             )
 
         self._wireguard_instance()
@@ -1852,7 +1864,7 @@ class Driftify:
         self._apply_unit_state(
             "multipathd.socket",
             [["systemctl", "enable", "multipathd.service"]],
-            [("multipathd.socket", "enabled")],
+            [("multipathd.service", "enabled"), ("multipathd.socket", "enabled")],
             [f"multipathd.socket enabled against its disable preset, "
              f"through Also= on multipathd.service ({link})"],
         )

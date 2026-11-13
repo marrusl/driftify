@@ -124,7 +124,7 @@ The installed packages are chosen to be small, fast to install, and useful for o
 | `systemctl enable getty@tty2.service` | Enabled template instance with no config | minimal |
 | Local static `driftify-static.service` (no `[Install]`), linked by hand into `multi-user.target.wants/` | Hand-made link to a unit `systemctl enable` would refuse | standard |
 | Local `driftify-also-main.service` with `Also=driftify-also-member.service`, enabled | `Also=` closure: one enable, two links | standard |
-| `cockpit.socket` set against its preset, read at run time (enabled where the preset is disable, as on RHEL 9; disabled where it is enable, as on RHEL 10) | Socket away from a preset that differs between releases | standard |
+| `cockpit.socket` set against its preset, read at run time (enabled where the preset is disable, as on RHEL 9; disabled where it is enable, as on RHEL 10); skipped on RHEL 8, whose systemd 239 prints no preset column | Socket away from a preset that differs between releases | standard |
 | `enable cups.service`, then `disable cups.socket` | "Service on, socket off" on an enable-preset unit | kitchen-sink |
 | `enable iscsid.service`, then `disable iscsid.socket` | "Service on, socket off" on a disable-preset unit | kitchen-sink |
 | `enable virtnetworkd.service`, then `disable virtnetworkd-ro.socket`, which turns off all three sockets through their mutual `Also=` | Mutual `Also=` socket triple | kitchen-sink |
