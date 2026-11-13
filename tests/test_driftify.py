@@ -139,6 +139,31 @@ class TestHelpersAndDryRun(DriftifyTestCase):
             d._write_managed_text(str(file_path), "two\n")
             self.assertEqual(file_path.read_text(), "two\n")
 
+    def test_write_managed_text_creates_a_new_file_at_its_final_mode(self):
+        # With chmod disabled, only the mode given at creation is left, so a
+        # file created under the umask and tightened afterwards shows here.
+        with tempfile.TemporaryDirectory() as td:
+            d = self._build_non_dry_with_temp_stamp(td)
+            file_path = Path(td) / "secret.conf"
+            old_umask = os.umask(0o022)
+            try:
+                with unittest.mock.patch("os.chmod"):
+                    d._write_managed_text(str(file_path), "key\n", mode=0o600)
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(file_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(file_path.read_text(), "key\n")
+
+    def test_write_managed_text_update_ends_at_the_requested_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = self._build_non_dry_with_temp_stamp(td)
+            file_path = Path(td) / "secret.conf"
+            file_path.write_text("old\n")
+            file_path.chmod(0o644)
+            d._write_managed_text(str(file_path), "new\n", mode=0o600)
+            self.assertEqual(file_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(file_path.read_text(), "new\n")
+
     def test_append_managed_block_is_idempotent(self):
         with tempfile.TemporaryDirectory() as td:
             d = self._build_non_dry_with_temp_stamp(td)
@@ -916,6 +941,25 @@ class TestUsers(DriftifyTestCase):
         self.assertIn("developers", output)
         self.assertIn("/etc/sudoers.d/appusers", output)
         self.assertIn("/home/appuser/.ssh/authorized_keys", output)
+
+    def test_users_sssd_configs_are_written_at_mode_0600(self):
+        # The mode goes to the write itself, not to a chmod after it.
+        with tempfile.TemporaryDirectory() as td:
+            driftify.STAMP_PATH = Path(td) / "stamp.json"
+            d = driftify.Driftify("kitchen-sink", dry_run=False, skip_sections=[])
+            d.stamp.start(d.profile, d.os_id, d.os_major)
+            modes = {}
+            d._write_managed_text = (
+                lambda path_str, content, mode=0o644:
+                modes.__setitem__(path_str, mode)
+            )
+            d._ensure_dir = lambda p: None
+            d.run_cmd = lambda *a, **k: None
+            d._user_exists = lambda name: True
+            d._group_exists = lambda name: True
+            d.drift_users()
+        self.assertEqual(modes["/etc/sssd/sssd.conf"], 0o600)
+        self.assertEqual(modes["/etc/sssd/conf.d/ad-domain.conf"], 0o600)
 
 
 

@@ -728,8 +728,16 @@ class Driftify:
             _dry(f"{action} file {path}")
             return
         self._ensure_dir(path.parent)
-        with open(path, "w") as fh:
-            fh.write(content)
+        if path.exists():
+            with open(path, "w") as fh:
+                fh.write(content)
+        else:
+            # Create at the final mode so a secret is never readable more
+            # widely than *mode*, even briefly. The umask can only narrow it,
+            # and the chmod below makes it exact.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(content)
         os.chmod(path, mode)
         if not self.quiet:
             _info(f"Wrote {path}")
@@ -2848,9 +2856,8 @@ domain=INTERNAL
                 "auth_provider = ipa\n"
                 "ipa_server = ipa.local\n"
                 "ipa_domain = ipa.local\n",
+                mode=0o600,
             )
-            if not self.dry_run:
-                Path("/etc/sssd/sssd.conf").chmod(0o600)
 
             # SSSD cache dirs
             for d in ("db", "mc", "pipes", "pipes/private"):
@@ -2915,9 +2922,8 @@ domain=INTERNAL
                 "ad_domain = ad.driftify.local\n"
                 "ldap_id_mapping = true\n"
                 "fallback_homedir = /home/%u@%d\n",
+                mode=0o600,
             )
-            if not self.dry_run:
-                Path("/etc/sssd/conf.d/ad-domain.conf").chmod(0o600)
 
     # ── Containers ─────────────────────────────────────────────────────────
 
