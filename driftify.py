@@ -867,7 +867,7 @@ class Driftify:
         if content is None:
             return False
         self._write_managed_text(path_str, content, mode=mode)
-        return self.dry_run or Path(path_str).exists()
+        return Path(path_str).exists()
 
     # ── systemd queries (read-only, never run in --dry-run) ───────────────
 
